@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>JobWall — submit work, get the job</title>
+<link rel="stylesheet" href="/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%230b0f14'/><rect x='7' y='9' width='18' height='15' rx='2' fill='none' stroke='%2361e8b0' stroke-width='2'/><path d='M7 15h18' stroke='%2361e8b0' stroke-width='2'/></svg>">
+</head>
+<body>
+<a class="skip" href="#results">Skip to results</a>
+
+<header class="masthead">
+  <div class="wrap">
+    <p class="eyebrow">No recruiter. No referral. No résumé screen.</p>
+    <h1>JobWall</h1>
+    <p class="lede">
+      Paste a project or a whole profile. It reads the actual code, works out what you can
+      demonstrably do, names the job titles that fit, and lists live openings that match —
+      with a link to every one.
+    </p>
+
+    <form id="form" autocomplete="off">
+      <label for="url" class="field-label">GitHub project link or username</label>
+      <div class="field-row">
+        <input id="url" name="url" type="text" spellcheck="false"
+               placeholder="https://github.com/BoogerCheeseOnRye/SecMesh"
+               aria-describedby="url-hint">
+        <button type="submit" id="go">Hit the wall</button>
+      </div>
+      <p id="url-hint" class="hint">
+        Works with a repo link, <code>user/repo</code>, or just a username.
+      </p>
+      <div class="examples">
+        <span>Try:</span>
+        <button type="button" class="chip" data-fill="https://github.com/BoogerCheeseOnRye/SecMesh">SecMesh repo</button>
+        <button type="button" class="chip" data-fill="BoogerCheeseOnRye">your profile</button>
+        <button type="button" class="chip" data-fill="sindresorhus">someone else's profile</button>
+      </div>
+    </form>
+
+    <div id="status" class="status" role="status" aria-live="polite"></div>
+  </div>
+</header>
+
+<main id="results" class="wrap main" hidden>
+  <section class="card" id="evidence-section">
+    <div class="card-head">
+      <h2><span class="num">1</span> What I read</h2>
+      <span class="pill pill-quiet" id="evidence-time"></span>
+    </div>
+    <div id="evidence"></div>
+  </section>
+
+  <section class="card" id="roles-section">
+    <div class="card-head">
+      <h2><span class="num">2</span> Jobs you qualify for</h2>
+      <span class="pill pill-quiet">ranked by your own evidence</span>
+    </div>
+    <div id="roles"></div>
+  </section>
+
+  <section class="card" id="openings-section">
+    <div class="card-head">
+      <h2><span class="num">3</span> Live openings that match</h2>
+      <div class="head-tools">
+        <label class="toggle">
+          <input type="checkbox" id="remote">
+          Remote only
+        </label>
+        <label class="toggle">
+          <input type="checkbox" id="realistic">
+          Hide roles above my level
+        </label>
+        <label class="toggle">
+          <input type="checkbox" id="paid">
+          Only openings that state pay
+        </label>
+        <span class="pill pill-quiet" id="feed-status"></span>
+      </div>
+    </div>
+    <div id="jobs"></div>
+  </section>
+
+  <section class="card" id="search-section">
+    <div class="card-head">
+      <h2><span class="num">4</span> Search links, built for your stack</h2>
+      <span class="pill pill-quiet">no account, no login wall</span>
+    </div>
+    <div id="searches"></div>
+  </section>
+</main>
+
+<footer class="wrap foot">
+  <p>
+    <strong>How the score works.</strong> Every skill has to point at something real: a language you
+    wrote bytes in, a dependency in a manifest, a file path, or your own words in a README.
+    Roles are weighted baskets of those skills. Openings are scored by how much of your evidence the
+    posting actually speaks to — then reduced for gates you cannot show on GitHub (years of
+    experience, degrees, clearance). Both numbers are shown. Neither is a person.
+  </p>
+  <p class="dim">
+    Feeds: <span id="foot-feeds">checking…</span> · data fetched live, nothing stored,
+    nothing sent anywhere but the APIs you see named.
+  </p>
+  <p class="dim">
+    Wage ranges are quoted from the postings themselves — the board's salary field first, then the
+    prose — and are never estimated. Figures the posting did not state are left blank. Converted
+    ranges use <span id="foot-pay">ECB reference rates</span>.
+  </p>
+</footer>
+
+<script src="/app.js" type="module"></script>
+</body>
+</html>

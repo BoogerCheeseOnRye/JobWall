@@ -1,0 +1,12 @@
+{
+  "name": "jobwall",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Submit a GitHub project or profile; get the job titles you qualify for and live openings that match.",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test \"test/*.test.js\""
+  },
+  "engines": { "node": ">=20" }
+}
