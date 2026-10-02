@@ -21,6 +21,9 @@ const VERDICT_PILL = {
 };
 
 let lastResult = null;
+// Set when /api/health is unreachable. GitHub Pages serves the front-end but
+// runs no Node, so the page has to say so rather than look broken.
+let apiDown = false;
 
 // Exported so the wiring can be exercised against a stub DOM in tests, and so
 // nothing runs twice if the page is ever mounted again.
@@ -45,7 +48,8 @@ export function mount() {
         .join(' · ');
     })
     .catch(() => {
-      $('#foot-feeds').textContent = 'feed status unavailable';
+      apiDown = true;
+      $('#foot-feeds').textContent = 'no backend on this host — see README';
     });
 }
 
@@ -69,7 +73,7 @@ async function onSubmit(e) {
     setStatus('', `Done in ${(data.tookMs / 1000).toFixed(1)}s. ${data.jobs.count} openings matched from ${num(data.jobs.scanned)} scanned.`);
     $('#results').scrollIntoView({ behavior: 'smooth', block: 'start' });
   } catch (err) {
-    setStatus('err', `${err.message} <span class="dim">JobWall stays up — fix the link or try again.</span>`);
+    setStatus('err', `${err.message} <span class="dim">${apiDown ? 'This host serves the page but not the API — run <code>node server.js</code> to analyze for real.' : 'JobWall stays up — fix the link or try again.'}</span>`);
   } finally {
     $('#go').disabled = false;
   }

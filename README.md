@@ -13,6 +13,19 @@ node --test "test/*.test.js"
 
 No dependencies, no build step, no API keys required.
 
+## The GitHub Pages build
+
+`docs/` is the front-end — the same directory the Node server serves, so there is
+one copy of it rather than two that drift. It is published as a static site.
+
+Pages runs no Node, so the published page is the interface only: submitting a
+link there tells you the host has no API behind it. The matching, the feed pulls
+and the wage parsing all need the server:
+
+```bash
+node server.js        # the real thing, on :8999
+```
+
 ## What it accepts
 
 - `https://github.com/owner/repo` — one project

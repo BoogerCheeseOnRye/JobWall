@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { score } from '../lib/analyze.js';
-import { mount } from '../public/app.js';
+import { mount } from '../docs/app.js';
 
 // A stand-in for a fetched repo: same shape analyze() receives from GitHub, no
 // network and no API quota. Live job data is still used, so the rendering is

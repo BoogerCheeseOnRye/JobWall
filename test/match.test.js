@@ -209,8 +209,8 @@ test('years gates scale with the number asked for', () => {
 });
 
 test('the UI only references element ids that exist in the page', async () => {
-  const html = await readFile(new URL('../public/index.html', import.meta.url), 'utf8');
-  const js = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const html = await readFile(new URL('../docs/index.html', import.meta.url), 'utf8');
+  const js = await readFile(new URL('../docs/app.js', import.meta.url), 'utf8');
   const ids = new Set([...html.matchAll(/\bid="([^"]+)"/g)].map((m) => m[1]));
   const referenced = [...js.matchAll(/\$\('#([\w-]+)'\)/g)].map((m) => m[1]);
   assert.ok(referenced.length > 8, `sanity: found ${referenced.length} id lookups`);

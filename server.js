@@ -8,7 +8,9 @@ import { fetchFeed } from './lib/jobs.js';
 const PORT = Number(process.env.PORT || 8999);
 const HOST = process.env.HOST || '0.0.0.0';
 const ROOT = fileURLToPath(new URL('.', import.meta.url));
-const PUBLIC = join(ROOT, 'public');
+// `docs/` is also what GitHub Pages publishes, so there is one copy of the
+// front-end, not two that drift.
+const PUBLIC = join(ROOT, 'docs');
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
