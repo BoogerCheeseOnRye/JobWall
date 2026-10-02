@@ -1,3 +1,5 @@
+import { analyze as runAnalyze, probe, isBrowserMode } from './api.js';
+
 const $ = (sel) => document.querySelector(sel);
 const esc = (s) =>
   String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -21,9 +23,6 @@ const VERDICT_PILL = {
 };
 
 let lastResult = null;
-// Set when /api/health is unreachable. GitHub Pages serves the front-end but
-// runs no Node, so the page has to say so rather than look broken.
-let apiDown = false;
 
 // Exported so the wiring can be exercised against a stub DOM in tests, and so
 // nothing runs twice if the page is ever mounted again.
@@ -39,18 +38,28 @@ export function mount() {
   $('#remote').addEventListener('change', () => lastResult && renderJobs(lastResult));
   $('#paid').addEventListener('change', () => lastResult && renderJobs(lastResult));
 
-  // Health check on load so the page never lies about what's working.
-  fetch('/api/health')
-    .then((r) => r.json())
-    .then((h) => {
-      $('#foot-feeds').textContent = h.feeds
-        .map((s) => `${s.name} ${s.ok ? `(${s.count})` : `(down)`}`)
-        .join(' · ');
+  // Health check on load so the page never lies about what's working. Picks the
+  // backend once: the Node server when there is one, the in-browser engine when
+  // the page is being served statically.
+  probe()
+    .then((feeds) => {
+      $('#foot-feeds').textContent = isBrowserMode()
+        ? (feeds.length ? `${feeds.map((s) => `${s.name} (${s.ok ? s.count : 'down'})`).join(' · ')} · in your browser` : 'feeds unavailable in your browser')
+        : feeds.map((s) => `${s.name} ${s.ok ? `(${s.count})` : `(down)`}`).join(' · ');
     })
     .catch(() => {
-      apiDown = true;
-      $('#foot-feeds').textContent = 'no backend on this host — see README';
+      $('#foot-feeds').textContent = 'feed status unavailable';
     });
+}
+
+// GitHub gives anonymous browser callers 60 requests/hour per IP, and a
+// profile scan spends several. Say so plainly instead of showing "403".
+function rateLimitHint(err) {
+  const msg = String(err && err.message || '');
+  if (/rate limit|403|API rate/i.test(msg)) {
+    return `GitHub allows 60 requests/hour per IP for anonymous callers, and a profile scan spends several. Try a single <strong>repo link</strong> instead of a whole profile, or run <code>node server.js</code> with a token.`;
+  }
+  return 'JobWall stays up — fix the link or try again.';
 }
 
 async function onSubmit(e) {
@@ -61,19 +70,13 @@ async function onSubmit(e) {
   $('#go').disabled = true;
   setStatus('busy', `<span class="bar"></span>Reading the code, then pulling live openings…`);
   try {
-    const res = await fetch('/api/analyze', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url }),
-    });
-    const data = await res.json();
-    if (!res.ok || !data.ok) throw new Error(data.error || `Request failed (${res.status})`);
+    const data = await runAnalyze(url);
     lastResult = data;
     render(data);
-    setStatus('', `Done in ${(data.tookMs / 1000).toFixed(1)}s. ${data.jobs.count} openings matched from ${num(data.jobs.scanned)} scanned.`);
+    setStatus('', `Done in ${(data.tookMs / 1000).toFixed(1)}s. ${data.jobs.count} openings matched from ${num(data.jobs.scanned)} scanned.${data.cached ? ' (cached)' : ''}`);
     $('#results').scrollIntoView({ behavior: 'smooth', block: 'start' });
   } catch (err) {
-    setStatus('err', `${err.message} <span class="dim">${apiDown ? 'This host serves the page but not the API — run <code>node server.js</code> to analyze for real.' : 'JobWall stays up — fix the link or try again.'}</span>`);
+    setStatus('err', `${esc(err.message)} <span class="dim">${rateLimitHint(err)}</span>`);
   } finally {
     $('#go').disabled = false;
   }

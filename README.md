@@ -15,16 +15,37 @@ No dependencies, no build step, no API keys required.
 
 ## The GitHub Pages build
 
-`docs/` is the front-end — the same directory the Node server serves, so there is
-one copy of it rather than two that drift. It is published as a static site.
+`docs/` is the whole front-end, and it is what GitHub Pages publishes. It holds
+`lib/` too, so the page and the server run the *same* engine from one copy —
+there is no build step and nothing to keep in sync.
 
-Pages runs no Node, so the published page is the interface only: submitting a
-link there tells you the host has no API behind it. The matching, the feed pulls
-and the wage parsing all need the server:
+Pages runs no Node, so there is no `/api/*` there. The page handles that: it
+probes `/api/health` once and picks a backend.
+
+- **Server** — `node server.js`. The API is real and the page uses it.
+- **In-browser** — no backend at all. Every upstream (Arbeitnow, Remotive,
+  Remote OK, Jobicy, GitHub, Frankfurter) sends `Access-Control-Allow-Origin: *`,
+  and `lib/` is plain ES modules with no node builtins, so the engine simply
+  runs in the page against the same sources.
+
+A failed probe is never surfaced as `res.json()` throwing `Unexpected token '<'`
+— responses are read as text and parsed, so an HTML error page becomes a
+readable message instead of a syntax error.
+
+### The 60/hour wall
+
+GitHub gives anonymous callers **60 requests/hour per IP**, and a profile scan
+spends several of them. Results are cached in `localStorage` for 30 minutes, so
+revisits and back-and-forth on the same link cost nothing. To raise the ceiling,
+run the server with a token:
 
 ```bash
-node server.js        # the real thing, on :8999
+GITHUB_TOKEN=ghp_xxx node server.js
 ```
+
+If you need this to hold up under traffic, put a real backend behind the same
+`lib/` — a Cloudflare Worker is a ~40-line adapter, because none of the engine
+touches node builtins.
 
 ## What it accepts
 

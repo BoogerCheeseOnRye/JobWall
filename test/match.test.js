@@ -2,11 +2,11 @@ import test from 'node:test';
 import { readFile } from 'node:fs/promises';
 import assert from 'node:assert/strict';
 
-import { parseTarget } from '../lib/github.js';
-import { detect } from '../lib/extract.js';
-import { scoreRoles, seniorityOf, isEntryFriendly } from '../lib/roles.js';
-import { scoreJob, fetchFeed } from '../lib/jobs.js';
-import { boardLinks, combinationQueries } from '../lib/search.js';
+import { parseTarget } from '../docs/lib/github.js';
+import { detect } from '../docs/lib/extract.js';
+import { scoreRoles, seniorityOf, isEntryFriendly } from '../docs/lib/roles.js';
+import { scoreJob, fetchFeed } from '../docs/lib/jobs.js';
+import { boardLinks, combinationQueries } from '../docs/lib/search.js';
 
 test('parseTarget understands every shape a person might paste', () => {
   assert.deepEqual(parseTarget('https://github.com/BoogerCheeseOnRye/SecMesh'), {
@@ -218,7 +218,7 @@ test('the UI only references element ids that exist in the page', async () => {
   assert.deepEqual(missing, [], `app.js references ids absent from index.html: ${missing.join(', ')}`);
 
   // Every role/job field the renderer reads must survive the API contract.
-  const { scoreJob } = await import('../lib/jobs.js');
+  const { scoreJob } = await import('../docs/lib/jobs.js');
   const skills = detect({ languages: { JavaScript: 9_000_000 }, readme: 'javascript html css', deps: {} }).top(26);
   const roles = scoreRoles(skills);
   const scored = scoreJob({
@@ -231,7 +231,7 @@ test('the UI only references element ids that exist in the page', async () => {
   for (const field of ['title', 'company', 'url', 'location', 'remote', 'salary', 'level', 'match', 'realistic', 'gates', 'matched', 'wants', 'publishedAt', 'sourceName', 'sourceUrl', 'role', 'alsoOn']) {
     assert.ok(field in scored, `job payload must carry "${field}"`);
   }
-  const { SOURCES } = await import('../lib/jobs.js');
+  const { SOURCES } = await import('../docs/lib/jobs.js');
   for (const s of SOURCES) {
     const job = s.map({ title: 'x', company: 'y', url: 'https://e.com/2', location: '', remote: true, tags: [], job_types: [], created_at: 0 });
     assert.ok(job === null || job.url, `${s.id} mapper produces an apply link`);
@@ -273,7 +273,7 @@ test('live feeds parse and normalize into comparable jobs', async (t) => {
 
 // ------------------------------------------------------------------- wages
 test('wage ranges come from the posting, not from a guess', async () => {
-  const { parseWage, formatWage } = await import('../lib/wages.js');
+  const { parseWage, formatWage } = await import('../docs/lib/wages.js');
 
   assert.deepEqual(parseWage('Salary Range €117.200 &mdash; €146.500 EUR'), {
     min: 117200, max: 146500, currency: 'EUR', period: 'year', raw: '€117.200 – €146.500',
@@ -290,7 +290,7 @@ test('wage ranges come from the posting, not from a guess', async () => {
 });
 
 test('money that is not pay is not read as pay', async () => {
-  const { parseWage } = await import('../lib/wages.js');
+  const { parseWage } = await import('../docs/lib/wages.js');
   // Every one of these mentions a pay-shaped number in a non-pay context.
   for (const text of [
     'Over $200B in annualized spend flows through us',
@@ -304,7 +304,7 @@ test('money that is not pay is not read as pay', async () => {
 });
 
 test('a broken feed salary field is dropped rather than shown', async () => {
-  const { fetchFeed } = await import('../lib/jobs.js');
+  const { fetchFeed } = await import('../docs/lib/jobs.js');
   const feed = await fetchFeed();
   const out = feed.jobs.filter((j) => {
     const g = j.wage;

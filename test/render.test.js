@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { score } from '../lib/analyze.js';
+import { score } from '../docs/lib/analyze.js';
 import { mount } from '../docs/app.js';
+import { probe, isBrowserMode } from '../docs/api.js';
 
 // A stand-in for a fetched repo: same shape analyze() receives from GitHub, no
 // network and no API quota. Live job data is still used, so the rendering is
@@ -96,17 +97,22 @@ function makeDom() {
   };
 }
 
+// A stand-in for Response: the shim reads .text() and parses it itself, so
+// that a host answering with an HTML error page can never reach res.json() and
+// surface as "Unexpected token '<'".
+function stubResponse(body, { ok = true, status = 200 } = {}) {
+  const text = async () => (typeof body === 'string' ? body : JSON.stringify(body));
+  return { ok, status, statusText: '', text, json: async () => JSON.parse(await text()) };
+}
+
 test('the page renders real results from a real submission', async () => {
   const dom = makeDom();
   const payload = await score({ kind: 'repo', owner: 'fixture', repo: 'SecMesh' }, FIXTURE_REPO);
   payload.tookMs = 1234;
 
   globalThis.document = dom.document;
-  globalThis.fetch = async (url) => ({
-    ok: true,
-    status: 200,
-    json: async () => (url === '/api/analyze' ? payload : { ok: true, feeds: payload.sources }),
-  });
+  globalThis.fetch = async (url) =>
+    stubResponse(url === '/api/analyze' ? payload : { ok: true, feeds: payload.sources });
 
   await mount();
   dom.get('#url').value = 'BoogerCheeseOnRye/SecMesh';
@@ -169,7 +175,8 @@ test('the page renders real results from a real submission', async () => {
 test('an upstream failure surfaces as readable text, not a blank page', async () => {
   const dom = makeDom();
   globalThis.document = dom.document;
-  globalThis.fetch = async () => ({ ok: false, status: 404, json: async () => ({ ok: false, error: 'Not found on GitHub: /users/nope' }) });
+  globalThis.fetch = async () =>
+    stubResponse({ ok: false, error: 'Not found on GitHub: /users/nope' }, { ok: false, status: 404 });
   await mount();
 
   dom.get('#url').value = 'nope';
@@ -180,4 +187,16 @@ test('an upstream failure surfaces as readable text, not a blank page', async ()
   assert.match(status.innerHTML, /Not found on GitHub/, 'the actual reason is shown');
   assert.match(status.className, /err/, 'styled as an error');
   assert.equal(dom.get('#go').disabled, false, 'the button is usable again');
+});
+
+test('a static host answering /api/health with HTML does not surface a SyntaxError', async () => {
+  globalThis.document = makeDom().document;
+  // Exactly what GitHub Pages does: 404 with an HTML body, not JSON.
+  globalThis.fetch = async () =>
+    stubResponse('<!DOCTYPE html><html><body>404</body></html>', { ok: false, status: 404 });
+
+  const feeds = await probe();
+
+  assert.ok(Array.isArray(feeds), 'probe resolves instead of throwing');
+  assert.equal(isBrowserMode(), true, 'falls back to the in-browser engine');
 });

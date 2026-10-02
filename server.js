@@ -2,8 +2,8 @@ import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { extname, join, normalize, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { analyze } from './lib/analyze.js';
-import { fetchFeed } from './lib/jobs.js';
+import { analyze } from './docs/lib/analyze.js';
+import { fetchFeed } from './docs/lib/jobs.js';
 
 const PORT = Number(process.env.PORT || 8999);
 const HOST = process.env.HOST || '0.0.0.0';
