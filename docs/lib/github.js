@@ -2,15 +2,21 @@ const API = 'https://api.github.com';
 const TTL_MS = 10 * 60 * 1000;
 const cache = new Map();
 
+// This module runs in Node (server.js) and in the browser (Pages). A browser
+// has no `process`, and merely mentioning it throws ReferenceError — which is
+// not the same as undefined, so `typeof` is the only safe way to ask.
+const env = () => (typeof process !== 'undefined' && process.env) || {};
+
 const headers = () => {
   const h = {
     Accept: 'application/vnd.github+json',
     'User-Agent': 'jobwall',
     'X-GitHub-Api-Version': '2022-11-28',
   };
-  // Optional. Lifts the 60/hr anonymous limit to 5000/hr if you happen to
-  // have a token lying around. Not required.
-  if (process.env.GITHUB_TOKEN) h.Authorization = `Bearer ${process.env.GITHUB_TOKEN}`;
+  // Optional, and server-side only — the browser cannot hold a secret, and
+  // anything shipped to a page is public. Lifts the 60/hr anonymous limit to
+  // 5000/hr if you happen to have a token in the environment. Not required.
+  if (env().GITHUB_TOKEN) h.Authorization = `Bearer ${env().GITHUB_TOKEN}`;
   return h;
 };
 
