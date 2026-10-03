@@ -114,11 +114,16 @@ function render(data) {
 }
 
 // ------------------------------------------------------------- 1. evidence
-function renderEvidence({ profile, skills, tookMs }) {
-  $('#evidence-time').textContent = `${num(profile.fileCount || profile.publicRepos || 0)} items read in ${(tookMs / 1000).toFixed(1)}s`;
+function renderEvidence({ profile, skills, roles, tookMs }) {
+  const sampled = profile.sampledRepos || [];
+  const totalRepos = profile.repoTotal || profile.publicRepos || 0;
+  const repos = profile.repos || [];
+  const isProfile = !profile.repo;
 
-  const langs = Object.entries(profile.languages || {}).sort((a, b) => b[1] - a[1]);
-  const total = langs.reduce((a, [, v]) => a + v, 0) || 1;
+  // The read is the product, so say what it was before anything else.
+  $('#evidence-time').textContent = isProfile
+    ? `${num(sampled.length || totalRepos)} of ${num(totalRepos)} repos read · ${(tookMs / 1000).toFixed(1)}s`
+    : `${num(profile.fileCount || 0)} files · ${(tookMs / 1000).toFixed(1)}s`;
 
   const groups = new Map();
   for (const s of skills) {
@@ -132,28 +137,82 @@ function renderEvidence({ profile, skills, tookMs }) {
   if (profile.followers) facts.push(`<span class="pill">${profile.followers} followers</span>`);
   if (profile.pushedAt) facts.push(`<span class="pill">pushed ${ago(profile.pushedAt)}</span>`);
   if (profile.license) facts.push(`<span class="pill">${esc(profile.license)}</span>`);
-  if (profile.sizeKb) facts.push(`<span class="pill">${num(profile.sizeKb)} KB</span>`);
   if (profile.tools?.bundler) facts.push(`<span class="pill">${esc(profile.tools.bundler)}</span>`);
   if (profile.tools?.test) facts.push(`<span class="pill">${esc(profile.tools.test)}</span>`);
 
-  const notable = (profile.notablePaths || []).slice(0, 30);
-  const deps = (profile.deps || []).slice(0, 30);
+  // Lead with the conclusion. A recruiter reads the first line and decides
+  // whether to keep reading, so the first line has to be the finding.
+  const topRoles = (roles || []).slice(0, 2).map((r) => r.title);
+  const topSkills = [...skills]
+    .sort((a, b) => b.confidence - a.confidence)
+    .slice(0, 4)
+    .map((s) => s.label);
+  const verdict =
+    (topRoles.length || topSkills.length) &&
+    `<div class="verdict">
+       ${
+         topRoles.length
+           ? `You come across as a <b>${topRoles.join('</b> or <b>')}</b>.`
+           : 'This reads as general software work.'
+       }
+       ${
+         topSkills.length
+           ? `Strongest evidence: ${topSkills.map((l) => `<b>${esc(l)}</b>`).join(', ')}.`
+           : ''
+       }
+       ${
+         isProfile
+           ? `That came out of ${num(totalRepos)} public repos${sampled.length && sampled.length < totalRepos ? `, ${num(sampled.length)} of them read down to their README and package.json` : ', all read in full'}.`
+           : ''
+       }
+     </div>`;
 
-  // Sampling used to be silent, so a missing project looked like a project that
-  // does not exist. Say plainly how deep the read went, and name what was
-  // left to metadata only.
-  const sampled = profile.sampledRepos || [];
-  const totalRepos = profile.repoTotal || profile.publicRepos || 0;
-  const shallow = totalRepos ? (profile.paths || []).filter((n) => !sampled.includes(n)) : [];
-  const coverage =
-    sampled.length && totalRepos
-      ? `<div class="coverage">
-           <b>Read ${sampled.length} of ${totalRepos} repos</b> in full — every repo counts for its
-           description and file names, but these got their README and package.json opened:
-           ${esc(sampled.join(', '))}.
-           ${shallow.length ? `Metadata only (all under 10 KB): ${esc(shallow.join(', '))}.` : ''}
-         </div>`
-      : '';
+  // Language mix. A repo with 21 KB of Python inside 74 MB is 0.03% of the
+  // bytes, and "0.0%" next to an empty bar reads as a bug rather than a fact.
+  const langs = Object.entries(profile.languages || {})
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 8);
+  const bytes = langs.reduce((a, [, v]) => a + v, 0) || 1;
+  const langBlock = langs.length
+    ? `<div class="langs">${langs
+        .map(([name, n]) => {
+          const pct = (n / bytes) * 100;
+          const text = pct > 0 && pct < 1 ? '&lt;1%' : `${pct.toFixed(0)}%`;
+          const width = Math.min(100, Math.max(pct, 1.4)); // keep a real sliver visible
+          return `<div class="lang">
+            <span class="lang-name" title="${esc(name)}">${esc(name)}</span>
+            <span class="lang-track"><span class="lang-fill" style="width:${width.toFixed(2)}%"></span></span>
+            <span class="lang-pct">${text}</span>
+          </div>`;
+        })
+        .join('')}</div>`
+    : '';
+
+  const deps = (profile.deps || []).slice(0, 30);
+  const notable = (profile.notablePaths || []).slice(0, 30);
+  const biggest = repos[0] ? repos[0].sizeKb || 0 : 1;
+
+  // Every repo is listed. Truncating this list was what made a 7.9 MB game
+  // look like it did not exist, so the grid now runs to the end and is
+  // ordered by substance, with a mark for the ones read in depth.
+  const repoGrid = repos.length
+    ? `<h3 class="sub">Projects<span class="dim"> — ranked by size, not by recency</span></h3>
+       <div class="repo-grid">${repos
+         .map(
+           (r) => `<div class="repo${r.sampled ? ' repo-read' : ''}">
+             <div class="repo-top">
+               <a href="${esc(r.url)}" target="_blank" rel="noopener">${esc(r.name)}</a>
+               ${r.sampled ? '<span class="pill pill-good">read in full</span>' : ''}
+             </div>
+             <p>${esc(r.description || '—')}</p>
+             <div class="repo-size">
+               <span class="lang-track"><span class="lang-fill" style="width:${Math.min(100, ((r.sizeKb || 0) / biggest) * 100).toFixed(1)}%"></span></span>
+               <small>${esc(r.language || '—')} · ${num(r.sizeKb || 0)} KB · ${ago(r.pushedAt)}</small>
+             </div>
+           </div>`
+         )
+         .join('')}</div>`
+    : '';
 
   $('#evidence').innerHTML = `
     <div class="profile-head">
@@ -162,31 +221,18 @@ function renderEvidence({ profile, skills, tookMs }) {
           <a href="${esc(profile.url)}" target="_blank" rel="noopener">${esc(profile.name)}</a>
           ${profile.repo ? `<span class="dim"> / ${esc(profile.repo)}</span>` : ''}
         </div>
-        <p class="profile-desc">${esc(profile.description || 'No description written. Fine — the code did the talking.')}</p>
       </div>
       <div class="facts">${facts.join('')}</div>
     </div>
 
-    ${coverage}
-
-    ${langs.length ? `<div class="langs">${langs
-      .slice(0, 8)
-      .map(([name, bytes]) => {
-        const pct = (bytes / total) * 100;
-        return `<div class="lang">
-          <span class="lang-name" title="${esc(name)}">${esc(name)}</span>
-          <span class="lang-track"><span class="lang-fill" style="width:${pct.toFixed(1)}%"></span></span>
-          <span class="lang-pct">${pct.toFixed(0)}%</span>
-        </div>`;
-      })
-      .join('')}</div>` : ''}
+    ${verdict}
+    ${langBlock}
 
     <div class="skill-groups">
       ${[...groups.entries()]
-        .map(([cat, items]) => {
-          const name = cat.charAt(0).toUpperCase() + cat.slice(1);
-          return `<div class="skill-group">
-            <h3>${esc(name)}</h3>
+        .map(
+          ([cat, items]) => `<div class="skill-group">
+            <h3>${esc(cat.charAt(0).toUpperCase() + cat.slice(1))}</h3>
             ${items
               .map(
                 (s) => `<div class="skill">
@@ -197,30 +243,18 @@ function renderEvidence({ profile, skills, tookMs }) {
                 </div>`
               )
               .join('')}
-          </div>`;
-        })
+          </div>`
+        )
         .join('')}
     </div>
 
-    ${deps.length ? `<h3 style="margin:1.2rem 0 .5rem;font:600 .78rem/1 var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--dim)">Manifests read</h3>
+    ${deps.length ? `<h3 class="sub">Declared dependencies<span class="dim"> — from package.json</span></h3>
       <div class="files">${deps.map((d) => `<span class="file">${esc(d)}</span>`).join('')}</div>` : ''}
 
-    ${notable.length ? `<h3 style="margin:1.2rem 0 .5rem;font:600 .78rem/1 var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--dim)">Files that shaped the read</h3>
+    ${notable.length ? `<h3 class="sub">Files that shaped the read</h3>
       <div class="files">${notable.map((p) => `<span class="file">${esc(p)}</span>`).join('')}</div>` : ''}
 
-    ${profile.repos?.length
-      ? `<h3 style="margin:1.2rem 0 .5rem;font:600 .78rem/1 var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--dim)">Projects sampled</h3>
-         <div class="repo-grid">${profile.repos
-           .slice(0, 12)
-           .map(
-             (r) => `<div class="repo">
-               <a href="${esc(r.url)}" target="_blank" rel="noopener">${esc(r.name)}</a>
-               <p>${esc(r.description || '—')}</p>
-               <small>${esc(r.language || '—')} · ${num(r.sizeKb || 0)} KB · ${ago(r.pushedAt)}</small>
-             </div>`
-           )
-           .join('')}</div>`
-      : ''}
+    ${repoGrid}
   `;
 }
 

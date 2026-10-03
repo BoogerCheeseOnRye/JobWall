@@ -200,3 +200,91 @@ test('a static host answering /api/health with HTML does not surface a SyntaxErr
   assert.ok(Array.isArray(feeds), 'probe resolves instead of throwing');
   assert.equal(isBrowserMode(), true, 'falls back to the in-browser engine');
 });
+
+// The "Projects sampled" grid used to be cut to 12 entries in GitHub's default
+// order, which is "most recently pushed". That reads as a ranking of importance
+// and is wrong: it dropped a 7.9 MB game while keeping an 8 KB scratch repo, so
+// the biggest project on the profile looked like it did not exist.
+const FIXTURE_PROFILE = {
+  kind: 'profile',
+  owner: 'fixture',
+  repo: null,
+  name: 'fixture',
+  url: 'https://github.com/fixture',
+  description: '',
+  stars: 5,
+  forks: 1,
+  followers: 7,
+  pushedAt: '2026-10-01T00:00:00Z',
+  publicRepos: 17,
+  repoTotal: 17,
+  languages: { JavaScript: 17_505_280, HTML: 57_121_792, Python: 21_504 },
+  deps: { ws: '^8.19.0', vite: 'catalog:' },
+  files: ['package.json'],
+  topics: [],
+  sampledRepos: ['voidscream', 'SecMesh', 'THE.END.OF.AAA.GAMING'],
+  paths: ['voidscream', 'SecMesh', 'THE.END.OF.AAA.GAMING', 'SwarmRam', 'resume'],
+  readme: 'A neon roguelike FPS in a single HTML file. WebGL, voxels, WebSockets.',
+  repos: [
+    { name: 'voidscream', url: 'u', description: '', language: 'HTML', sizeKb: 43825, pushedAt: '2026-07-20T00:00:00Z', sampled: true },
+    { name: 'SecMesh', url: 'u', description: 'mesh', language: 'JavaScript', sizeKb: 17031, pushedAt: '2026-10-01T00:00:00Z', sampled: true },
+    { name: 'THE.END.OF.AAA.GAMING', url: 'https://github.com/fixture/THE.END.OF.AAA.GAMING', description: 'Is what is is brosky', language: 'HTML', sizeKb: 7958, pushedAt: '2026-06-11T00:00:00Z', sampled: true },
+    { name: 'SwarmRam', url: 'u', description: '', language: 'Python', sizeKb: 8, pushedAt: '2026-05-31T00:00:00Z', sampled: false },
+    { name: 'resume', url: 'u', description: '', language: 'HTML', sizeKb: 0, pushedAt: '2026-03-16T00:00:00Z', sampled: false },
+  ],
+};
+
+test('every project appears on the profile, ordered by substance', async () => {
+  const dom = makeDom();
+  const payload = await score({ kind: 'profile', owner: 'fixture' }, FIXTURE_PROFILE);
+  payload.tookMs = 2000;
+
+  globalThis.document = dom.document;
+  globalThis.fetch = async (url) =>
+    stubResponse(url === '/api/analyze' ? payload : { ok: true, feeds: payload.sources });
+
+  await mount();
+  await new Promise((r) => setTimeout(r, 25)); // probe() is fire-and-forget
+  assert.equal(isBrowserMode(), false, 'server mode must settle before submit');
+  dom.get('#url').value = 'fixture';
+  dom.get('#form').fire('submit', { preventDefault() {} });
+  await new Promise((r) => setTimeout(r, 50));
+
+  const html = dom.get('#evidence')._html;
+  assert.ok(html.includes('THE.END.OF.AAA.GAMING'), 'the big game must appear');
+  assert.ok(html.includes('SwarmRam'), 'and so must the small one — nothing is hidden');
+  assert.ok(
+    html.indexOf('THE.END.OF.AAA.GAMING') < html.indexOf('SwarmRam'),
+    'ranked by size, so the 7.9 MB game comes before the 8 KB repo'
+  );
+  assert.ok(html.includes('read in full'), 'repos read in depth are marked');
+  assert.ok(
+    /3 of 17 repos read/.test(dom.get('#evidence-time')._text),
+    `the header states the coverage, got: ${dom.get('#evidence-time')._text}`
+  );
+});
+
+test('the evidence card leads with the finding, not a data dump', async () => {
+  const dom = makeDom();
+  const payload = await score({ kind: 'profile', owner: 'fixture' }, FIXTURE_PROFILE);
+  payload.tookMs = 2000;
+
+  globalThis.document = dom.document;
+  globalThis.fetch = async (url) =>
+    stubResponse(url === '/api/analyze' ? payload : { ok: true, feeds: payload.sources });
+
+  await mount();
+  await new Promise((r) => setTimeout(r, 25)); // probe() is fire-and-forget
+  assert.equal(isBrowserMode(), false, 'server mode must settle before submit');
+  dom.get('#url').value = 'fixture';
+  dom.get('#form').fire('submit', { preventDefault() {} });
+  await new Promise((r) => setTimeout(r, 50));
+
+  const html = dom.get('#evidence')._html;
+  assert.ok(html.includes('class="verdict"'), 'a plain-language verdict leads');
+  assert.ok(!html.includes('class="coverage"'), 'the old wall-of-text coverage block is gone');
+  // 21 KB of Python inside 74 MB is not "0.0%" beside an empty bar.
+  assert.ok(!html.includes('>0.0%<'), 'no zero-width language bar');
+  assert.ok(html.includes('&lt;1%'), 'a tiny-but-real language says so honestly');
+  assert.ok(html.includes('width:1.40%') || html.includes('width:1.4%'), 'and still gets a visible sliver');
+});

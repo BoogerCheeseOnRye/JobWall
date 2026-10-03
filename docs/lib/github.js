@@ -283,8 +283,17 @@ export async function analyzeProfile(owner) {
     deps,
     topics,
     paths,
-    repos: repos
-      .slice(0, 40)
+    // Ranked by the same measure as the deep read, not by GitHub's default of
+    // "most recently pushed". A project card ordered by recency reads as a
+    // ranking of importance, and that reading is simply wrong: it put an 8 KB
+    // scratch repo beside a 7.9 MB game while dropping the game entirely.
+    repos: [...repos]
+      .sort(
+        (a, b) =>
+          (b.size || 0) - (a.size || 0) ||
+          (b.stargazers_count || 0) - (a.stargazers_count || 0) ||
+          String(b.pushed_at || '').localeCompare(String(a.pushed_at || ''))
+      )
       .map((r) => ({
         name: r.name,
         url: r.html_url,
@@ -295,6 +304,7 @@ export async function analyzeProfile(owner) {
         pushedAt: r.pushed_at,
         topics: r.topics || [],
         sizeKb: r.size,
+        sampled: ranked.some((x) => x.name === r.name),
       })),
     readme: readmeText,
     sources: [readmeText, descriptions.join('\n'), topics.join(' ')],

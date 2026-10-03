@@ -69,6 +69,20 @@ Within a channel, signals combine as noisy-OR, so repetition has diminishing
 returns. Vendored code is excluded — `three`'s own `LightProbeHelper.js` is not
 evidence that you do security work.
 
+**Section 1 is written for a recruiter, not a dashboard.** It leads with the
+finding — the two roles the evidence actually supports, and the strongest
+signals behind them — before any of the machinery. Then language mix, then
+skills with their evidence, then the projects.
+
+Projects are ranked by **size, then stars, then recency**, never by GitHub's
+default "most recently pushed" order. Recency order reads as a ranking of
+importance and is wrong: it used to cut the grid at 12 entries, which dropped a
+7.9 MB game while keeping an 8 KB scratch repo, making the largest project on the
+profile look like it did not exist. Every repo is now listed, and the ones read
+down to their README and `package.json` are marked. A language with a real but
+tiny byte share says `<1%` and keeps a visible sliver instead of rendering as
+`0.0%` beside an empty bar.
+
 **Roles are weighted baskets** of those skills. Core skills decide the fit;
 bonuses move it. Each role reports what you proved, what it could not find, and
 the exact evidence string ("file: node-tests/defense-tool.mjs").
