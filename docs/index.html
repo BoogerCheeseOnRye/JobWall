@@ -64,6 +64,14 @@
     <div class="card-head">
       <h2><span class="num">3</span> Live openings that match</h2>
       <div class="head-tools">
+        <label class="scope-pick">
+          <span class="dim">Where</span>
+          <select id="scope" title="Which openings you can actually take">
+            <option value="us">US + remote</option>
+            <option value="seattle">Seattle area</option>
+            <option value="worldwide">Worldwide</option>
+          </select>
+        </label>
         <label class="toggle">
           <input type="checkbox" id="remote">
           Remote only
@@ -79,6 +87,7 @@
         <span class="pill pill-quiet" id="feed-status"></span>
       </div>
     </div>
+    <p class="scope-hint" id="scope-hint"></p>
     <div id="jobs"></div>
   </section>
 

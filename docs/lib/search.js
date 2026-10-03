@@ -3,16 +3,32 @@
 
 const enc = (s) => encodeURIComponent(s);
 
+// Where the reader wants to work. These boards are where the local market
+// actually lives — the feeds above only ever see remote roles, so a person
+// looking for work in Seattle needs the hand-built links aimed at Seattle too.
+export const WHERE = {
+  seattle: 'Seattle, WA',
+  us: 'United States',
+  remote: 'Remote',
+};
+
+export const whereForScope = (scopeId) =>
+  scopeId === 'seattle' ? WHERE.seattle : scopeId === 'worldwide' ? WHERE.remote : WHERE.us;
+
 export const BOARDS = [
   {
     id: 'linkedin',
     name: 'LinkedIn Jobs',
-    build: (q) => `https://www.linkedin.com/jobs/search/?keywords=${enc(q)}&location=Remote&f_WT=2`,
+    build: (q, where = WHERE.seattle) =>
+      // f_WT=2 is LinkedIn's remote-only filter, so it only applies when the
+      // reader is actually asking for remote work.
+      `https://www.linkedin.com/jobs/search/?keywords=${enc(q)}&location=${enc(where)}${where === WHERE.remote ? '&f_WT=2' : ''}`,
   },
   {
     id: 'indeed',
     name: 'Indeed',
-    build: (q) => `https://www.indeed.com/jobs?q=${enc(`${q} remote`)}&fromage=14&l=Remote`,
+    build: (q, where = WHERE.seattle) =>
+      `https://www.indeed.com/jobs?q=${enc(where === WHERE.remote ? `${q} remote` : q)}&fromage=14&l=${enc(where)}`,
   },
   {
     id: 'wwr',
@@ -32,7 +48,16 @@ export const BOARDS = [
   {
     id: 'dice',
     name: 'Dice',
-    build: (q) => `https://www.dice.com/job-search?q=${enc(q)}`,
+    build: (q, where = WHERE.seattle) =>
+      `https://www.dice.com/job-search?q=${enc(q)}&location=${enc(where)}`,
+  },
+  {
+    // A Seattle-specific board. Pointing a nationwide search at the local one
+    // is the difference between 40 Seattle roles and 40,000.
+    id: 'builtin',
+    name: 'Built In',
+    build: (q, where = WHERE.seattle) =>
+      `https://${where === WHERE.seattle ? 'www.builtinseattle.com' : 'builtin.com'}/jobs?keywords=${enc(q)}`,
   },
   {
     id: 'hn',
@@ -41,8 +66,8 @@ export const BOARDS = [
   },
 ];
 
-export function boardLinks(query, { include = BOARDS.map((b) => b.id) } = {}) {
-  return BOARDS.filter((b) => include.includes(b.id)).map((b) => ({ id: b.id, name: b.name, url: b.build(query) }));
+export function boardLinks(query, { include = BOARDS.map((b) => b.id), where = WHERE.seattle } = {}) {
+  return BOARDS.filter((b) => include.includes(b.id)).map((b) => ({ id: b.id, name: b.name, url: b.build(query, where) }));
 }
 
 // Skill-combination queries beat generic role queries: "React TypeScript
@@ -119,6 +144,7 @@ export function searchBlock(roles, skills) {
       id: role.id,
       title: role.title,
       fit: role.fit,
+      query: role.query,
       links: boardLinks(role.query),
     })),
     combos: combinationQueries(skills, roles).map((q) => ({ query: q, links: boardLinks(q) })),

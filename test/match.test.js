@@ -240,12 +240,14 @@ test('the UI only references element ids that exist in the page', async () => {
 
 test('search links are real, absolute, and per-board', () => {
   const links = boardLinks('WebGL engineer three.js');
-  assert.equal(links.length, 7);
+  assert.equal(links.length, 8);
   for (const l of links) assert.ok(l.url.startsWith('https://'), `${l.name} must be https`);
   const li = links.find((l) => l.id === 'linkedin');
   assert.ok(li.url.includes('keywords=WebGL%20engineer%20three.js'));
+  // Default is aimed at the reader's city, not "anywhere".
   const indeed = links.find((l) => l.id === 'indeed').url;
-  assert.ok(indeed.includes('remote'));
+  assert.ok(indeed.includes('Seattle'), `Indeed should target Seattle, got ${indeed}`);
+  assert.ok(links.find((l) => l.id === 'builtin').url.includes('builtinseattle.com'));
 });
 
 test('combination queries are built from real skills, deduplicated', () => {

@@ -1,4 +1,6 @@
 import { analyze as runAnalyze, probe, isBrowserMode } from './api.js';
+import { SCOPES, DEFAULT_SCOPE } from './lib/geo.js';
+import { boardLinks, whereForScope } from './lib/search.js';
 
 const $ = (sel) => document.querySelector(sel);
 const esc = (s) =>
@@ -37,6 +39,15 @@ export function mount() {
   $('#realistic').addEventListener('change', () => lastResult && renderJobs(lastResult));
   $('#remote').addEventListener('change', () => lastResult && renderJobs(lastResult));
   $('#paid').addEventListener('change', () => lastResult && renderJobs(lastResult));
+  $('#scope').value = DEFAULT_SCOPE;
+  // Scope changes the openings *and* the hand-built search links, so both
+  // sections are re-rendered. Built at analysis time they would still point at
+  // the location chosen before the reader touched the dropdown.
+  $('#scope').addEventListener('change', () => {
+    if (!lastResult) return;
+    renderJobs(lastResult);
+    renderSearch(lastResult);
+  });
 
   // Health check on load so the page never lies about what's working. Picks the
   // backend once: the Node server when there is one, the in-browser engine when
@@ -248,14 +259,43 @@ function renderRoles({ roles }) {
     .join('');
 }
 
+// ----------------------------------------------------------------- location
+
+// Say where the job actually is, in the words the posting used. A Seattle-area
+// role earns a badge; a remote role says so; everything else stays quiet and
+// falls back to the raw string the board gave us.
+function geoBadge(j) {
+  const g = j.geo || {};
+  if (g.metro) {
+    const where = g.city && g.city !== g.label ? g.city : g.label;
+    return `<span class="pill pill-good" title="Lists a Seattle-area location">seattle area${where ? ` · ${esc(where)}` : ''}</span>`;
+  }
+  if (j.remote) return '<span class="pill pill-good">remote</span>';
+  if (g.region) return `<span class="pill">${esc(g.regionName || g.region)}</span>`;
+  if (g.countryName && g.countryName !== 'United States')
+    return `<span class="pill pill-quiet" title="Outside the US">${esc(g.countryName)}</span>`;
+  return `<span class="pill">${esc(j.location || 'location unknown')}</span>`;
+}
+
+function scopeLabelFor(id) {
+  return (SCOPES[id] || SCOPES[DEFAULT_SCOPE]).label.toLowerCase();
+}
+
 // ----------------------------------------------------------------- 3. jobs
 function renderJobs({ jobs, roles }) {
-  $('#feed-status').textContent = `${num(jobs.scanned)} scanned · ${jobs.count} above threshold`;
+  const inScope = jobs.results.filter((j) => (SCOPES[$('#scope').value] || SCOPES[DEFAULT_SCOPE]).test(j)).length;
+  $('#feed-status').textContent =
+    `${num(jobs.scanned)} scanned · ${num(inScope)} ${scopeLabelFor($('#scope').value)} · ${jobs.count} above threshold`;
 
   const hideSenior = $('#realistic').checked;
   const remoteOnly = $('#remote').checked;
   const paidOnly = $('#paid').checked;
+  const scopeId = $('#scope').value || DEFAULT_SCOPE;
+  const scope = SCOPES[scopeId] || SCOPES[DEFAULT_SCOPE];
+  $('#scope-hint').textContent = scope.hint;
+
   let list = jobs.results;
+  list = list.filter((j) => scope.test(j));
   if (hideSenior) list = list.filter((j) => j.level !== 'senior' && j.level !== 'lead');
   if (remoteOnly) list = list.filter((j) => j.remote);
   if (paidOnly) list = list.filter((j) => j.wage);
@@ -286,7 +326,7 @@ function renderJobs({ jobs, roles }) {
           </div>
         </div>
         <div class="job-meta">
-          ${j.remote ? '<span class="pill pill-good">remote</span>' : `<span class="pill">${esc(j.location || 'location unknown')}</span>`}
+          ${geoBadge(j)}
           ${j.wageLabel ? `<span class="pill pill-pay" title="Stated in the posting">${esc(j.wageLabel)}${j.wageUsd ? ` <span class="dim">≈ ${esc(j.wageUsd)}</span>` : ''}</span>` : '<span class="pill pill-quiet">pay not stated</span>'}
           ${j.level && j.level !== 'unspecified' ? `<span class="pill ${j.level === 'entry' ? 'pill-good' : j.level === 'unspecified' ? 'pill-quiet' : 'pill-warn'}">${esc(j.level)}</span>` : ''}
           <span class="sep">·</span><span>${esc(j.location || 'remote')}</span>
@@ -307,11 +347,18 @@ function renderJobs({ jobs, roles }) {
 
 // -------------------------------------------------------------- 4. searches
 function renderSearch({ search }) {
+  const where = whereForScope($('#scope').value);
+  const aim = (item) => {
+    const links = item.query ? boardLinks(item.query, { where }) : item.links;
+    return links
+      .map((l) => `<a class="link" href="${esc(l.url)}" target="_blank" rel="noopener">${esc(l.name)} ↗</a>`)
+      .join('');
+  };
   const byRole = search.byRole
     .map(
       (r) => `<div class="search-block">
         <h3>${esc(r.title)} <span class="dim">· ${r.fit}% fit</span></h3>
-        <div class="links">${r.links.map((l) => `<a class="link" href="${esc(l.url)}" target="_blank" rel="noopener">${esc(l.name)} ↗</a>`).join('')}</div>
+        <div class="links">${aim(r)}</div>
       </div>`
     )
     .join('');
@@ -319,7 +366,7 @@ function renderSearch({ search }) {
     .map(
       (c) => `<div class="search-block">
         <h3>Stack search: <code>${esc(c.query)}</code></h3>
-        <div class="links">${c.links.map((l) => `<a class="link" href="${esc(l.url)}" target="_blank" rel="noopener">${esc(l.name)} ↗</a>`).join('')}</div>
+        <div class="links">${aim(c)}</div>
       </div>`
     )
     .join('');

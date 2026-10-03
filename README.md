@@ -99,11 +99,41 @@ matching openings that state their pay, annotated with how many of them did
 
 ## Feeds
 
-Live, no key, refreshed every 10 minutes: Arbeitnow, Remotive, Remote OK,
-Jobicy. Cross-posted duplicates are collapsed. Every result links to the actual
-posting, and the search section builds deep links to LinkedIn, Indeed, We Work
-Remotely, Wellfound, Remote OK, Dice and HN "Who is hiring?" so nothing is lost
-when a feed is down or thin.
+Live, no key, refreshed every 10 minutes: **The Muse**, Arbeitnow, Remotive,
+Remote OK, Jobicy. Cross-posted duplicates are collapsed. Every result links to
+the actual posting, and the search section builds deep links to LinkedIn,
+Indeed, We Work Remotely, Wellfound, Remote OK, Dice, Built In and HN
+"Who is hiring?" so nothing is lost when a feed is down or thin.
+
+## Where — locations
+
+The feeds are geographically lopsided. Arbeitnow is German, the remote boards
+often say only "Remote", and until The Muse was added a Seattle reader had
+**zero** local postings: 85 rows literally labelled `USA` were indistinguishable
+from rows with no location at all. So `lib/geo.js` reads the string every board
+gives us and works out the country, US state and Seattle metro.
+
+The **Where** control then narrows the results:
+
+| Scope | Shows |
+|-------|-------|
+| **US + remote** (default) | US postings and anything remote. Drops the ones we can be *sure* are elsewhere. |
+| **Seattle area** | Seattle, Bellevue, Redmond, Kirkland, Tacoma and the eastside, plus remote roles. |
+| **Worldwide** | Everything the feeds carry. |
+
+A location we cannot place is never hidden. Only openings the text positively
+identifies as elsewhere — `London`, `Berlin`, `Paris` — are dropped from the US
+view, because filing an unrecognised city as "overseas" would hide a US job from
+the person who most needs it. `"USA"`, `"Remote"` and `"Worldwide"` all stay in.
+
+Switching scope re-aims the hand-built search links too: LinkedIn, Indeed, Dice
+and Built In follow your choice, so "Seattle area" points at Built In Seattle
+rather than a nationwide board.
+
+Note that The Muse bot-filters the bare `curl` User-Agent and answers `403`.
+Both paths that matter are fine — Chrome (what a browser sends, because `fetch`
+cannot set `User-Agent`) and this project's own string — and both return
+`Access-Control-Allow-Origin: *`.
 
 ## Note on GitHub rate limits
 

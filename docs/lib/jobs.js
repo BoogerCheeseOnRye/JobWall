@@ -1,6 +1,7 @@
 import { ALIASES, termWeight, stem } from './skills.js';
 import { isEntryFriendly, seniorityOf } from './roles.js';
 import { parseWage, wageStats, formatWage } from './wages.js';
+import { geoOf } from './geo.js';
 
 const TTL_MS = 10 * 60 * 1000;
 let feedCache = { at: 0, jobs: [], sources: [] };
@@ -122,6 +123,40 @@ export const SOURCES = [
       };
     },
   },
+  {
+    // Every other feed here is either EU-heavy (Arbeitnow) or remote-first with
+    // geography left unsaid (Remotive, Remote OK, Jobicy), which left a Seattle
+    // reader with zero local postings. The Muse is a US board and it says where
+    // each role is: "Sarasota, FL". CORS-open, no key, and ~20% of its software
+    // engineering rows are in Washington. Its public API caps a page at 20 rows,
+    // so breadth comes from paging rather than page_size.
+    // Gotcha: the board bot-filters the bare `curl` UA and answers 403. Both
+    // paths that matter are fine — Chrome (what a browser sends, since fetch
+    // cannot set User-Agent) and our own `jobwall` string — and both come back
+    // with Access-Control-Allow-Origin: *. Don't be fooled by a curl 403.
+    id: 'muse',
+    name: 'The Muse',
+    homepage: 'https://www.themuse.com',
+    url: 'https://www.themuse.com/api/public/jobs',
+    categoryFilter: 'Software Engineering',
+    pages: 6,
+    map(raw) {
+      const locations = (raw.locations || []).map((l) => l?.name || '').filter(Boolean);
+      const levels = (raw.levels || []).map((l) => l?.name || '').filter(Boolean);
+      return {
+        title: raw.name,
+        company: raw.company?.name || '',
+        url: raw.refs?.landing_page || raw.url || (raw.id ? `https://www.themuse.com/jobs/${raw.id}` : ''),
+        location: locations.join(', ') || 'Remote',
+        remote: locations.length === 0,
+        tags: [...(raw.categories || []).map((c) => c?.name || ''), ...(raw.tags || []).map((t) => t || '')].filter(Boolean),
+        category: (raw.categories || [])[0]?.name || '',
+        level: levels.join(', '),
+        description: strip(raw.contents),
+        publishedAt: iso(raw.publication_date),
+      };
+    },
+  },
 ];
 
 // Feeds that ship salary as numbers give us exact figures; no parsing needed.
@@ -144,38 +179,70 @@ function structuredWage(srcId, raw) {
   };
 }
 
+// Each board wraps its payload differently.
+const listFor = (srcId, body) => {
+  if (srcId === 'arbeitnow') return body.data;
+  if (srcId === 'remotive') return body.jobs;
+  if (srcId === 'jobicy') return body.jobs;
+  if (srcId === 'muse') return body.results;
+  return body;
+};
+
+const urlsFor = (src) => {
+  if (!src.pages) return [src.url];
+  const q = new URLSearchParams({ category: src.categoryFilter });
+  return Array.from({ length: src.pages }, (_, i) => `${src.url}?${q}&page=${i + 1}`);
+};
+
 async function loadSource(src) {
-  const res = await fetch(src.url, {
-    headers: { 'User-Agent': 'jobwall/1.0 (+local)', Accept: 'application/json' },
-    signal: AbortSignal.timeout(15_000),
-  });
-  if (!res.ok) throw new Error(`${src.name} HTTP ${res.status}`);
-  const body = await res.json();
-  const list = src.id === 'arbeitnow' ? body.data : src.id === 'remotive' ? body.jobs : src.id === 'jobicy' ? body.jobs : body;
-  if (!Array.isArray(list)) throw new Error(`${src.name}: unexpected payload`);
+  const settled = await Promise.allSettled(
+    urlsFor(src).map((url) =>
+      fetch(url, {
+        headers: { 'User-Agent': 'jobwall/1.0 (+local)', Accept: 'application/json' },
+        signal: AbortSignal.timeout(15_000),
+      }).then((res) => {
+        if (!res.ok) throw new Error(`${src.name} HTTP ${res.status}`);
+        return res.json();
+      })
+    )
+  );
+
+  const good = settled.filter((r) => r.status === 'fulfilled');
+  // One flaky page must not cost the whole board, but if every page failed the
+  // source is genuinely down and the UI should say so rather than show 0 jobs.
+  if (!good.length) {
+    const first = settled.find((r) => r.status === 'rejected');
+    throw first?.reason || new Error(`${src.name}: no response`);
+  }
+
   const out = [];
-  for (const raw of list) {
-    let job;
-    try {
-      job = src.map(raw);
-    } catch {
-      continue;
+  for (const r of good) {
+    const list = listFor(src.id, r.value);
+    if (!Array.isArray(list)) continue;
+    for (const raw of list) {
+      let job;
+      try {
+        job = src.map(raw);
+      } catch {
+        continue;
+      }
+      if (!job || !job.title || !job.url) continue;
+      // The board's own salary field first (structured beats guessed), then the
+      // prose. Never invented: null means the posting did not say.
+      job.wage =
+        structuredWage(src.id, raw) ||
+        parseWage(job.salary) ||
+        parseWage(job.description);
+      job.geo = geoOf(job.location, { remote: job.remote });
+      out.push({
+        ...job,
+        id: `${src.id}:${job.url}`,
+        alsoOn: null,
+        source: src.id,
+        sourceName: src.name,
+        sourceUrl: src.homepage,
+      });
     }
-    if (!job || !job.title || !job.url) continue;
-    // The board's own salary field first (structured beats guessed), then the
-    // prose. Never invented: null means the posting did not say.
-    job.wage =
-      structuredWage(src.id, raw) ||
-      parseWage(job.salary) ||
-      parseWage(job.description);
-    out.push({
-      ...job,
-      id: `${src.id}:${job.url}`,
-      alsoOn: null,
-      source: src.id,
-      sourceName: src.name,
-      sourceUrl: src.homepage,
-    });
   }
   return out;
 }

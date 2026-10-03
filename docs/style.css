@@ -109,6 +109,16 @@ button:active { transform: translateY(1px); }
 .head-tools { display: flex; gap: .75rem; align-items: center; flex-wrap: wrap; }
 .toggle { font-size: .84rem; color: var(--dim); display: flex; gap: .4rem; align-items: center; cursor: pointer; }
 
+/* Where the reader can actually work. Sits with the other head tools but reads
+   as the primary control, so it is boxed. */
+.scope-pick { display: flex; gap: .4rem; align-items: center; cursor: pointer; }
+.scope-pick select {
+  font: 600 .78rem/1 var(--mono); color: var(--text); background: var(--panel-2);
+  border: 1px solid var(--line); border-radius: 6px; padding: .35rem .5rem; cursor: pointer;
+}
+.scope-pick select:focus-visible { outline: 2px solid var(--accent-2); outline-offset: 2px; }
+.scope-hint { font-size: .78rem; color: var(--dim); margin: 0 0 .7rem; }
+
 .pill { font: 600 .74rem/1 var(--mono); padding: .35rem .6rem; border-radius: 999px; border: 1px solid var(--line); background: var(--panel-2); color: var(--dim); white-space: nowrap; }
 .pill-quiet { color: var(--dim); }
 .pill-good { color: var(--accent); border-color: #2b6b52; background: #12281f; }
