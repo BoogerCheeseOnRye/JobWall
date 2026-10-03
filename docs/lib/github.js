@@ -7,9 +7,9 @@ const cache = new Map();
 // not the same as undefined, so `typeof` is the only safe way to ask.
 const env = () => (typeof process !== 'undefined' && process.env) || {};
 
-const headers = () => {
+const headers = (accept) => {
   const h = {
-    Accept: 'application/vnd.github+json',
+    Accept: accept || 'application/vnd.github+json',
     'User-Agent': 'jobwall',
     'X-GitHub-Api-Version': '2022-11-28',
   };
@@ -31,13 +31,20 @@ class RateLimitError extends Error {
   }
 }
 
+// GitHub's contents endpoint answers JSON unless you ask for the raw media
+// type. Asking for JSON and calling .text() hands back the *envelope* —
+// {"name":"readme.md","sha":...,"content":"<base64>"} — which is why every
+// README used to arrive as a sha hash and every package.json parsed into an
+// object with no dependencies in it.
+const RAW_ACCEPT = 'application/vnd.github.raw';
+
 async function api(path, { raw = false } = {}) {
   const url = path.startsWith('http') ? path : `${API}${path}`;
   const key = `${url}|${raw}`;
   const hit = cache.get(key);
   if (hit && Date.now() - hit.at < TTL_MS) return hit.value;
 
-  const res = await fetch(url, { headers: headers(), signal: AbortSignal.timeout(12_000) });
+  const res = await fetch(url, { headers: headers(raw ? RAW_ACCEPT : null), signal: AbortSignal.timeout(12_000) });
   if (res.status === 403 && /rate limit/i.test(res.headers.get('x-ratelimit-remaining') === '0' ? 'rate limit' : 'rate limit')) {
     throw new RateLimitError(Number(res.headers.get('x-ratelimit-reset')) * 1000);
   }
@@ -230,7 +237,22 @@ export async function analyzeProfile(owner) {
 
   // Read the real files of the most substantive projects. Profile metadata
   // alone is marketing copy; code is evidence.
-  const ranked = [...repos].sort((a, b) => (b.size || 0) - (a.size || 0)).slice(0, 6);
+  //
+  // Six was too few: a profile of 17 repos silently ignored two thirds of the
+  // work, and the omissions looked like the projects did not exist. Every repo
+  // still contributes its description and path names, so nothing is invisible —
+  // but the deep read is what turns a game into a "three.js, WebGL" claim.
+  // Forks and empty repos are skipped: they cost two requests and prove
+  // nothing the owner did not already prove elsewhere.
+  const ranked = [...repos]
+    .filter((r) => !r.fork && !r.archived && (r.size || 0) > 0)
+    .sort(
+      (a, b) =>
+        (b.size || 0) - (a.size || 0) ||
+        (b.stargazers_count || 0) - (a.stargazers_count || 0) ||
+        String(b.pushed_at || '').localeCompare(String(a.pushed_at || ''))
+    )
+    .slice(0, 12);
   const deps = {};
   let readmeText = '';
   const fileHits = [];
@@ -277,6 +299,7 @@ export async function analyzeProfile(owner) {
     readme: readmeText,
     sources: [readmeText, descriptions.join('\n'), topics.join(' ')],
     sampledRepos: ranked.map((r) => r.name),
+    repoTotal: repos.length,
     files: [...new Set(fileHits)],
   };
 }

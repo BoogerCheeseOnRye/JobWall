@@ -139,6 +139,22 @@ function renderEvidence({ profile, skills, tookMs }) {
   const notable = (profile.notablePaths || []).slice(0, 30);
   const deps = (profile.deps || []).slice(0, 30);
 
+  // Sampling used to be silent, so a missing project looked like a project that
+  // does not exist. Say plainly how deep the read went, and name what was
+  // left to metadata only.
+  const sampled = profile.sampledRepos || [];
+  const totalRepos = profile.repoTotal || profile.publicRepos || 0;
+  const shallow = totalRepos ? (profile.paths || []).filter((n) => !sampled.includes(n)) : [];
+  const coverage =
+    sampled.length && totalRepos
+      ? `<div class="coverage">
+           <b>Read ${sampled.length} of ${totalRepos} repos</b> in full — every repo counts for its
+           description and file names, but these got their README and package.json opened:
+           ${esc(sampled.join(', '))}.
+           ${shallow.length ? `Metadata only (all under 10 KB): ${esc(shallow.join(', '))}.` : ''}
+         </div>`
+      : '';
+
   $('#evidence').innerHTML = `
     <div class="profile-head">
       <div>
@@ -150,6 +166,8 @@ function renderEvidence({ profile, skills, tookMs }) {
       </div>
       <div class="facts">${facts.join('')}</div>
     </div>
+
+    ${coverage}
 
     ${langs.length ? `<div class="langs">${langs
       .slice(0, 8)

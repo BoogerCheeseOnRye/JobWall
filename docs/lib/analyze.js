@@ -46,6 +46,7 @@ function summarize(profile, target) {
     location: profile.location,
     blog: profile.blog,
     sampledRepos: profile.sampledRepos || [],
+    repoTotal: profile.repoTotal || 0,
     repos: profile.repos,
     links: [profile.url],
   };
