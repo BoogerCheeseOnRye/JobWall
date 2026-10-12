@@ -2,7 +2,7 @@ import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { extname, join, normalize, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { analyze } from './docs/lib/analyze.js';
+import { analyze, analyzeMany } from './docs/lib/analyze.js';
 import { fetchFeed } from './docs/lib/jobs.js';
 
 const PORT = Number(process.env.PORT || 8999);
@@ -87,9 +87,10 @@ const server = createServer(async (req, res) => {
     if (pathname === '/api/analyze') {
       if (req.method !== 'POST') return sendJson(res, 405, { ok: false, error: 'POST a JSON body: {"url": "..."}' });
       const body = await readBody(req);
+      const urls = Array.isArray(body.urls) ? body.urls : null;
       const input = body.url || body.target || body.q || '';
       const t0 = Date.now();
-      const result = await analyze(input);
+      const result = urls && urls.length ? await analyzeMany(urls) : await analyze(input);
       result.tookMs = Date.now() - t0;
       return sendJson(res, 200, result);
     }

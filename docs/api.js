@@ -126,3 +126,40 @@ export async function analyze(input) {
   });
   return res;
 }
+
+// Many targets, one person. Kept beside analyze() rather than folded into it so
+// the single-target path — including its cache key — is untouched.
+export async function analyzeMany(inputs) {
+  const list = (Array.isArray(inputs) ? inputs : [inputs]).map((i) => String(i).trim()).filter(Boolean);
+  if (!list.length) throw new Error('Paste at least one link or username.');
+  if (list.length === 1) return analyze(list[0]);
+  if (mode === 'browser') {
+    const { analyzeMany: run } = await import('./lib/analyze.js');
+    const t0 = Date.now();
+    const result = await run(list);
+    result.tookMs = Date.now() - t0;
+    return result;
+  }
+  return serverFetch('/api/analyze', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ urls: list }),
+  });
+}
+// Resume uploads never leave the browser. There is no server route for them on
+// purpose: a resume is the most personal document a job seeker owns, and the
+// matching half of this app already runs client-side.
+export async function analyzeResume(input) {
+  const { readResume } = await import('./lib/resume-source.js');
+  const { score } = await import('./lib/analyze.js');
+  const t0 = Date.now();
+  const read = await readResume(input);
+  if (!read.resume) {
+    throw Object.assign(new Error(read.reason || 'no text found in that file'), { read });
+  }
+  const result = await score({ kind: 'resume', owner: read.resume.name || 'resume' }, read.profile);
+  result.tookMs = Date.now() - t0;
+  result.resume = read.resume;
+  result.resumeSource = read;
+  return result;
+}

@@ -53,6 +53,78 @@ touches node builtins.
 - `owner/repo`, `owner`, or `github.com/owner`
 - a profile reads your top projects' READMEs and manifests too, not just metadata
 
+## The résumé path
+
+The second door on the page reads a résumé instead of a repo, then hands you
+back a rewritten one. The file is read **in your browser** — there is no upload
+endpoint, no account, and nothing written to disk on the server. In the browser
+it is parsed by `docs/lib/resume.js`; the same file runs under Node for the CLI.
+
+### What it accepts
+
+| Input | Read by | Notes |
+|---|---|---|
+| `.pdf` | `docs/lib/pdf.js` | Text-layer PDFs only, including compressed streams |
+| `.docx` | `docs/lib/docx.js` | `word/document.xml`, no third-party dependency |
+| `.txt`, `.md` | plain text | The section headings do the work |
+
+Not supported, and it says so instead of guessing: legacy `.doc`, PDFs with an
+encryption dictionary, and scanned or image-only PDFs (no text layer to read).
+
+Sections are matched by heading, with aliases — `Summary`/`Profile`/`Objective`,
+`Experience`/`Work History`/`Employment`, `Education`/`Qualifications`, and so
+on. Entries under `Certifications` fold into education and `Publications` into
+awards, because that is where a reader expects to find them.
+
+### The ten export formats
+
+Every format is written from the same semantic model, so none of them is a
+text-dump of another. The panel groups them by what you are doing with the file.
+
+| Group | Formats | For |
+|---|---|---|
+| Ready to send | `pdf`, `docx`, `html` | What an employer actually reads |
+| ATS-safe | `txt`, `html-ats`, `md`, `rtf` | Feeding a form or a tracker that mangles layout |
+| Structured | `json`, `yaml`, `tex` | Importers that read fields, or your own typesetter |
+
+- **`pdf`** — written by `docs/lib/pdf-write.js`: real Helvetica, word-wrapped,
+  paginated, with clickable project links. No headless browser involved.
+- **`docx`** — a real OOXML package (`docs/lib/zip.js` writes the zip). Validated
+  by opening it in LibreOffice; every hyperlink's `r:id` is asserted against
+  `word/_rels/document.xml.rels`, because a link with no relationship still
+  *looks* fine and silently dies when clicked.
+- **`json`** — JSON Resume shape (`basics`, `work`, `skills`, `projects`, …).
+- **`yaml`** — the same structure, nested.
+- **`tex`** — a single self-contained document; no preamble assumptions.
+
+The writers are checked against the readers, not just against their own
+expectations: the test suite extracts the text back out of the generated PDF and
+DOCX and compares it, so a writer cannot drift from the parser it feeds.
+
+### Offline
+
+```bash
+# what does the parser see?
+node tools/resume-cli.mjs path/to/resume.pdf
+
+# every format at once, then open the PDF and the styled HTML
+node tools/resume-export.mjs path/to/resume.pdf --out ./out --open
+
+# just two of them
+node tools/resume-export.mjs path/to/resume.pdf --format json,md --out ./out
+
+# one text format to stdout, with nothing but the document on it
+node tools/resume-export.mjs path/to/resume.docx --format json --out - | jq .basics.name
+
+# the parsed model, for debugging the parser
+node tools/resume-export.mjs path/to/resume.pdf --pretty
+```
+
+Progress, warnings and file paths go to **stderr**, so `--out -` gives you a
+clean document to pipe. Binary formats (`pdf`, `docx`) are refused there —
+point `--out` at a directory for those. `--open` hands the finished files to the
+desktop; it only ever opens what it just wrote.
+
 ## How the matching works
 
 **Evidence, four channels, each with a ceiling.** Nothing you can write in a
@@ -152,7 +224,15 @@ cannot set `User-Agent`) and this project's own string — and both return
 ## Note on GitHub rate limits
 
 Anonymous GitHub API access is 60 requests/hour and results are cached for 10
-minutes. To raise it to 5000/hour:
+minutes. That wall is why `test/browser-globals.test.js` is the only test that
+talks to GitHub — it **skips with a reason** rather than failing when the limit
+is spent or the network is gone. Set a token to keep it running:
+
+```bash
+GITHUB_TOKEN=ghp_xxx npm test
+```
+
+To raise the app's own limit to 5000/hour:
 
 ```bash
 GITHUB_TOKEN=ghp_xxx node server.js
@@ -166,3 +246,66 @@ curl -s -X POST localhost:8999/api/analyze \
   -H 'Content-Type: application/json' \
   -d '{"url":"https://github.com/BoogerCheeseOnRye/SecMesh"}' | jq .roles
 ```
+
+---
+
+## Proposal: Local ADB/Termux hosting (documentation only)
+
+**Status:** proposal. Not implemented. This must not be started without explicit
+user approval.
+
+### Why
+
+Sometimes a device is generating or editing the files you want to inspect (e.g. a
+Termux session on an Android phone). A reverse-tunnel from that device to the
+dev box keeps it local-only — no third-party relay — while letting `server.js`
+serve the same static build it already serves from `docs/`.
+
+### Topology
+
+- Termux runs `node server.js` on the phone (or just serves the `docs/` build via
+  a tiny static server) bound to `127.0.0.1:8999`.
+- `adb reverse tcp:8999 tcp:8999` exposes that port to the host while the USB
+  connection is present.
+- The browser on the host hits `http://127.0.0.1:8999` as it does today — no
+  changes to the app, and no code ever reaches the internet except what GitHub
+  jobs already fetch anonymously.
+
+### Security
+
+- Local loopback only. No public port is opened.
+- Requires physical USB access to run `adb` (the trust gate). No SSH/HTTP auth
+  is added unless the user explicitly asks for it.
+- The existing "nothing stored" promise is unaffected: resumes stay in the
+  browser.
+
+### Known constraints
+
+- **Termux process lifecycle:** Android kills background Termux processes
+  aggressively (especially on Doze/App Standby). Long-lived servers need to stay
+  in the foreground or use a wake-lock (`termux-wake-lock`). This is the single
+  biggest operational point, not a code problem.
+- **ADB connectivity:** `adb` can hang on a wedged adbd; recovery is `adb
+  kill-server && adb start-server && adb reverse ...` — documented, not automated
+  here.
+- **Network path:** entirely offline from the user's LAN except localhost. No
+  Cloudflare tunnel is proposed.
+- **Port conflicts:** only one instance of `server.js` can bind to 8999 on a
+  given host/phone.
+
+### Implementation (minimal, if approved)
+
+1. `tools/adb-termux.mjs` (optional) — prints the three commands to run, checks
+   that `adb` and `node` exist, and verifies the reverse tunnel. No shell exec of
+   long-running daemons.
+2. README addition only: this section. No `package.json` script that spawns ADB
+   without explicit consent.
+3. No cluster watchdogs, no stack startup hooks. The Guard Rails from the
+   environment (cluster OFF by default) are honoured.
+
+### When to use it
+
+Only when the user explicitly says to expose the local build over ADB. Until
+then this remains documentation only. The static build (`docs/`) is the
+deployment path for GitHub Pages; this is purely for local device-host
+development.

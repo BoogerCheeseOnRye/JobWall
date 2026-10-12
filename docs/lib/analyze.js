@@ -40,6 +40,9 @@ function summarize(profile, target) {
   }
   return {
     ...base,
+    // summarize() rebuilds the profile from a fixed field list, so anything
+    // else the caller attached has to be named here or it is dropped.
+    fromResume: profile.fromResume || false,
     realName: profile.realName,
     followers: profile.followers,
     publicRepos: profile.publicRepos,
@@ -59,6 +62,124 @@ export async function analyze(input) {
       ? await analyzeRepo(target.owner, target.repo)
       : await analyzeProfile(target.owner);
   return score(target, raw);
+}
+
+// More than one profile is still one person, so the evidence is merged before
+// it is scored rather than scored separately and added up. Scoring each source
+// alone and combining the results would double-count shared skills and let a
+// second repo "outvote" the first on roles neither of them supports on its own.
+//
+// The merge is deliberately shallow per source but complete across them: every
+// language byte, dependency, README, topic, path and file from every source is
+// present in the one raw the scorer sees.
+function mergeCounts(list) {
+  const out = {};
+  for (const counts of list) {
+    for (const [key, value] of Object.entries(counts || {})) {
+      out[key] = (out[key] || 0) + (typeof value === 'number' && Number.isFinite(value) ? value : 1);
+    }
+  }
+  return out;
+}
+
+const mergeUnique = (list) => [...new Set(list.flat().filter(Boolean))];
+
+export function mergeRaws(raws) {
+  const sources = raws.map((r) => ({
+    kind: r.kind,
+    name: r.name,
+    url: r.url,
+    description: r.description || r.bio || '',
+    stars: r.stars || 0,
+    fromRepo: r.kind === 'repo' ? `${r.owner}/${r.repo}` : null,
+  }));
+
+  // Every repo a profile sampled, plus a stand-in for each bare repo, so the
+  // project list in section 1 is populated whichever shape the sources are.
+  const repos = raws.flatMap((r) =>
+    r.kind === 'repo'
+      ? [{
+          name: r.repo,
+          url: r.url,
+          description: r.description || '',
+          language: Object.keys(r.languages || {})[0] || null,
+          stars: r.stars || 0,
+          forks: r.forks || 0,
+          pushedAt: r.pushedAt || null,
+          topics: r.topics || [],
+          sizeKb: r.sizeKb || 0,
+          sampled: true,
+        }]
+      : r.repos || []
+  );
+  const seenRepo = new Set();
+  const uniqueRepos = repos.filter((r) => {
+    const key = r.url || r.name;
+    if (!key || seenRepo.has(key)) return false;
+    seenRepo.add(key);
+    return true;
+  });
+
+  const descriptions = raws.flatMap((r) =>
+    r.kind === 'repo'
+      ? [r.description || '']
+      : (r.repos || []).map((x) => `${x.name} ${x.description || ''}`)
+  );
+
+  return {
+    kind: 'multi',
+    owner: raws.map((r) => r.owner).join('+'),
+    name: raws.map((r) => r.name).join(' + '),
+    url: raws[0]?.url || '',
+    description: sources.map((s) => s.description).filter(Boolean).join(' · '),
+    bio: raws.map((r) => r.bio).filter(Boolean).join(' · '),
+    realName: raws.find((r) => r.realName)?.realName || null,
+    location: raws.find((r) => r.location)?.location || '',
+    blog: raws.find((r) => r.blog)?.blog || '',
+    followers: raws.reduce((n, r) => n + (r.followers || 0), 0),
+    stars: raws.reduce((n, r) => n + (r.stars || 0), 0),
+    forks: raws.reduce((n, r) => n + (r.forks || 0), 0),
+    publicRepos: uniqueRepos.length,
+    repoTotal: uniqueRepos.length,
+    languages: mergeCounts(raws.map((r) => r.languages)),
+    deps: mergeCounts(raws.map((r) => r.deps)),
+    topics: mergeUnique(raws.map((r) => r.topics || [])),
+    paths: mergeUnique(raws.map((r) => r.paths || [])),
+    files: mergeUnique(raws.map((r) => r.files || [])),
+    tools: Object.assign({}, ...raws.map((r) => r.tools || {})),
+    readme: raws.map((r) => r.readme || '').join('\n\n'),
+    repos: uniqueRepos,
+    sampledRepos: uniqueRepos.filter((r) => r.sampled).map((r) => r.name),
+    sources,
+    createdAt: raws.map((r) => r.createdAt).filter(Boolean).sort()[0] || null,
+    pushedAt: raws.map((r) => r.pushedAt).filter(Boolean).sort().at(-1) || null,
+  };
+}
+
+// Accepts one target or many. One target keeps the old code path exactly, so a
+// single-profile analysis cannot change behaviour because a feature was added
+// beside it.
+export async function analyzeMany(inputs) {
+  const list = (Array.isArray(inputs) ? inputs : [inputs]).map((i) => String(i).trim()).filter(Boolean);
+  if (!list.length) throw new Error('no target given');
+  if (list.length === 1) return analyze(list[0]);
+
+  const targets = list.map(parseTarget);
+  const raws = [];
+  for (const target of targets) {
+    // Sequential on purpose: the anonymous GitHub limit is 60 requests/hour and
+    // each source costs many, so firing them all at once buys a rate-limit
+    // failure instead of a faster answer.
+    raws.push(
+      target.kind === 'repo'
+        ? await analyzeRepo(target.owner, target.repo)
+        : await analyzeProfile(target.owner)
+    );
+  }
+  const merged = mergeRaws(raws);
+  const result = await score({ kind: 'multi', owner: merged.owner }, merged);
+  result.profile.members = merged.sources;
+  return result;
 }
 
 // Split out from analyze() so the scoring half can be exercised without spending

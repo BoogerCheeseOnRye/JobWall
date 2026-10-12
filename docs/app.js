@@ -1,8 +1,56 @@
-import { analyze as runAnalyze, probe, isBrowserMode } from './api.js';
+import { analyze as runAnalyze, analyzeMany, analyzeResume, probe, isBrowserMode } from './api.js';
+import { readError } from './lib/resume-source.js';
+import { buildModel, exportResume, FORMATS } from './lib/resume-export.js';
 import { SCOPES, DEFAULT_SCOPE } from './lib/geo.js';
 import { boardLinks, whereForScope } from './lib/search.js';
 
 const $ = (sel) => document.querySelector(sel);
+
+// The URL row holds one input by default and grows with the + button. Reading
+// through this helper (rather than document.querySelectorAll directly) keeps the
+// single-target test path working too: the tests drive one #url field, and a
+// page with no .url-input class still resolves to it.
+function urlInputs() {
+  const all = [...document.querySelectorAll('.url-input')];
+  if (all.length) return all;
+  const one = $('#url');
+  return one ? [one] : [];
+}
+
+function addUrlField(value = '') {
+  const wrap = $('#url-multi');
+  if (!wrap) return null;
+  const row = document.createElement('div');
+  row.className = 'url-row';
+  const input = document.createElement('input');
+  input.className = 'url-input';
+  input.type = 'text';
+  input.spellcheck = false;
+  input.placeholder = 'https://github.com/owner/repo or user/repo';
+  input.value = value;
+  const rm = document.createElement('button');
+  rm.type = 'button';
+  rm.className = 'url-remove';
+  rm.setAttribute('aria-label', 'Remove this entry');
+  rm.textContent = '−';
+  rm.addEventListener('click', () => {
+    row.remove();
+    updateUrlRemoveButtons();
+  });
+  row.appendChild(input);
+  row.appendChild(rm);
+  wrap.appendChild(row);
+  updateUrlRemoveButtons();
+  return input;
+}
+
+function updateUrlRemoveButtons() {
+  const rows = document.querySelectorAll('#url-multi .url-row');
+  rows.forEach((r) => {
+    const rm = r.querySelector('.url-remove');
+    if (rm) rm.style.display = rows.length > 1 ? '' : 'none';
+  });
+}
 const esc = (s) =>
   String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
@@ -30,9 +78,28 @@ let lastResult = null;
 // nothing runs twice if the page is ever mounted again.
 export function mount() {
   $('#form').addEventListener('submit', onSubmit);
+  $('#export').addEventListener('click', onExportClick);
+  $('#add-url').addEventListener('click', () => {
+    const input = addUrlField();
+    if (input && input.focus) input.focus();
+  });
+
+  $('#form-resume').addEventListener('submit', (e) => {
+    e.preventDefault();
+    onResumeSubmit();
+  });
+  $('#resume').addEventListener('change', (e) => {
+    const file = e.target.files && e.target.files[0];
+    $('#resume-hint').textContent = file
+      ? `${file.name} — ${(file.size / 1024).toFixed(0)} KB, ready to read`
+      : 'PDF, Word, or plain text. Parsed on this page — no account, no upload, nothing stored.';
+  });
   for (const chip of document.querySelectorAll('[data-fill]')) {
     chip.addEventListener('click', () => {
-      $('#url').value = chip.dataset.fill;
+      const inputs = urlInputs();
+      const last = inputs[inputs.length - 1];
+      if (last && !last.value) last.value = chip.dataset.fill;
+      else addUrlField(chip.dataset.fill);
       $('#form').requestSubmit();
     });
   }
@@ -40,6 +107,27 @@ export function mount() {
   $('#remote').addEventListener('change', () => lastResult && renderJobs(lastResult));
   $('#paid').addEventListener('change', () => lastResult && renderJobs(lastResult));
   $('#scope').value = DEFAULT_SCOPE;
+  // ensure first URL row can be removed if multiple exist later
+  const first = document.querySelector('#url-multi .url-input');
+  if (first && !first.closest('.url-row')) {
+    const row = document.createElement('div');
+    row.className = 'url-row';
+    const input = first;
+    const parent = first.parentElement;
+    if (parent) parent.insertBefore(row, input); else $('#url-multi')?.appendChild(row);
+    row.appendChild(input);
+    const rm = document.createElement('button');
+    rm.type = 'button';
+    rm.className = 'url-remove';
+    rm.setAttribute('aria-label', 'Remove this entry');
+    rm.textContent = '−';
+    rm.addEventListener('click', () => { row.remove(); updateUrlRemoveButtons(); });
+    row.appendChild(rm);
+    updateUrlRemoveButtons();
+  } else {
+    updateUrlRemoveButtons();
+  }
+
   // Scope changes the openings *and* the hand-built search links, so both
   // sections are re-rendered. Built at analysis time they would still point at
   // the location chosen before the reader touched the dropdown.
@@ -75,13 +163,14 @@ function rateLimitHint(err) {
 
 async function onSubmit(e) {
   e.preventDefault();
-  const url = $('#url').value.trim();
-  if (!url) return setStatus('err', 'Paste a link or a username first.');
+  const urls = urlInputs().map((i) => i.value.trim()).filter(Boolean);
+  if (!urls.length) return setStatus('err', 'Paste a link or a username first.');
 
   $('#go').disabled = true;
-  setStatus('busy', `<span class="bar"></span>Reading the code, then pulling live openings…`);
+  const reading = urls.length > 1 ? `${urls.length} profiles` : 'the code';
+  setStatus('busy', `<span class="bar"></span>Reading ${reading}, then pulling live openings…`);
   try {
-    const data = await runAnalyze(url);
+    const data = urls.length > 1 ? await analyzeMany(urls) : await runAnalyze(urls[0]);
     lastResult = data;
     render(data);
     setStatus('', `Done in ${(data.tookMs / 1000).toFixed(1)}s. ${data.jobs.count} openings matched from ${num(data.jobs.scanned)} scanned.${data.cached ? ' (cached)' : ''}`);
@@ -89,6 +178,32 @@ async function onSubmit(e) {
   } catch (err) {
     setStatus('err', `${esc(err.message)} <span class="dim">${rateLimitHint(err)}</span>`);
   } finally {
+    $('#go').disabled = false;
+  }
+}
+
+async function onResumeSubmit() {
+  const input = $('#resume');
+  const file = input.files && input.files[0];
+  if (!file) return setStatus('err', 'Choose a file first — PDF, Word, or plain text.');
+
+  $('#go-resume').disabled = true;
+  $('#go').disabled = true;
+  setStatus('busy', `<span class="bar"></span>Reading <strong>${esc(file.name)}</strong> in your browser…`);
+  try {
+    const data = await analyzeResume(file);
+    lastResult = data;
+    render(data);
+    const warned = data.resume?.warnings?.length
+      ? ` <span class="dim">${data.resume.warnings.length} line${data.resume.warnings.length > 1 ? 's' : ''} I could not place — check section 1.</span>`
+      : '';
+    setStatus('', `Parsed ${data.resumeSource.format.toUpperCase()} in ${(data.tookMs / 1000).toFixed(1)}s. ${data.jobs.count} openings matched from ${num(data.jobs.scanned)} scanned.${warned}`);
+    $('#results').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  } catch (err) {
+    const read = err.read;
+    setStatus('err', `${esc(readError(read))} <span class="dim">Nothing was uploaded — the file never left this page.</span>`);
+  } finally {
+    $('#go-resume').disabled = false;
     $('#go').disabled = false;
   }
 }
@@ -104,6 +219,7 @@ function render(data) {
   renderRoles(data);
   renderJobs(data);
   renderSearch(data);
+  renderExport(data);
   $('#results').hidden = false;
   $('#foot-feeds').textContent = data.sources
     .map((s) => `${s.name} ${s.ok ? `(${s.count})` : `(down: ${esc(s.error || 'error')})`}`)
@@ -113,8 +229,97 @@ function render(data) {
     : 'no fx today — ranges shown in their own currency';
 }
 
+// --------------------------------------------------------------- 5. export
+// Every format is built here, in the page, from the same parse shown above.
+// The download is a Blob, so the resume never touches a network again.
+let exportModel = null;
+
+function renderExport(data) {
+  const section = $('#export-section');
+  if (!data.resume) {
+    section.hidden = true;
+    exportModel = null;
+    return;
+  }
+  section.hidden = false;
+  exportModel = buildModel(data.resume);
+  const model = exportModel;
+
+  const groups = [...new Set(FORMATS.map((f) => f.group))];
+  const buttons = groups
+    .map((group) => {
+      const specs = FORMATS.filter((f) => f.group === group);
+      return `<div class="export-group">
+        <div class="export-group-label">${esc(group)}</div>
+        <div class="export-grid">
+          ${specs
+            .map(
+              (f) => `<button type="button" class="export-btn" data-format="${esc(f.id)}" title="${esc(f.blurb)}">
+                <b>${esc(f.label)}</b><span>${esc(f.blurb)}</span>
+              </button>`
+            )
+            .join('')}
+        </div>
+      </div>`;
+    })
+    .join('');
+
+  const warnings = (data.resume.warnings || []).length
+    ? `<p class="hint export-hint">${
+        data.resume.warnings.length === 1
+          ? 'One line could not be placed, so it is not in these files.'
+          : `${data.resume.warnings.length} lines could not be placed, so they are not in these files.`
+      } Fix it in the source and read the file again.</p>`
+    : '';
+
+  $('#export').innerHTML = `
+    <div class="export-head">
+      <div>
+        <div class="profile-title">${esc(model.meta.name)}</div>
+        <div class="dim">${model.sections.length} section${model.sections.length === 1 ? '' : 's'} · ${num(
+          model.meta.contacts.length
+        )} contact detail${model.meta.contacts.length === 1 ? '' : 's'}</div>
+      </div>
+      <div class="facts"><span class="pill pill-good">built here</span></div>
+    </div>
+    <p class="hint export-hint">Same content, ${FORMATS.length} formats. Nothing is uploaded — the bytes are built in this tab and handed straight to your downloads.</p>
+    ${warnings}
+    ${buttons}`;
+}
+
+async function onExportClick(event) {
+  const button = event.target.closest('.export-btn');
+  if (!button) return;
+  if (!exportModel) return;
+  const format = button.dataset.format;
+  const label = button.querySelector('b').textContent;
+  button.disabled = true;
+  button.classList.add('busy');
+  try {
+    const out = await exportResume(exportModel, format);
+    // A Blob URL keeps the file local. It is revoked on a delay because Safari
+    // and Firefox can still be reading it when click() returns.
+    const url = URL.createObjectURL(new Blob([out.data], { type: out.mime }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = out.filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+    setStatus('', `Wrote <strong>${esc(out.filename)}</strong> — ${(out.data.length / 1024).toFixed(1)}kB, ${esc(label)}.`);
+  } catch (err) {
+    setStatus('err', `Could not build ${esc(label)}: ${esc(err.message)}`);
+  } finally {
+    button.disabled = false;
+    button.classList.remove('busy');
+  }
+}
+
 // ------------------------------------------------------------- 1. evidence
-function renderEvidence({ profile, skills, roles, tookMs }) {
+function renderEvidence(data) {
+  if (data.resume) return renderResumeEvidence(data);
+  const { profile, skills, roles, tookMs } = data;
   const sampled = profile.sampledRepos || [];
   const totalRepos = profile.repoTotal || profile.publicRepos || 0;
   const repos = profile.repos || [];
@@ -255,6 +460,137 @@ function renderEvidence({ profile, skills, roles, tookMs }) {
       <div class="files">${notable.map((p) => `<span class="file">${esc(p)}</span>`).join('')}</div>` : ''}
 
     ${repoGrid}
+  `;
+}
+
+// A resume is evidence too, so it gets the same first slot: what I read, before
+// anything else. Rendered from the parsed sections rather than the raw text so
+// a reader can check the parse against what they sent.
+function renderResumeEvidence({ skills, roles, tookMs, resume, resumeSource }) {
+  const contact = resume?.contact || {};
+  const facts = [];
+  if (contact.email) facts.push(`<span class="pill">${esc(contact.email)}</span>`);
+  if (contact.phone) facts.push(`<span class="pill">${esc(contact.phone)}</span>`);
+  if (contact.location) facts.push(`<span class="pill">${esc(contact.location)}</span>`);
+  for (const [kind, url] of Object.entries(contact.links || {})) {
+    if (!url) continue;
+    const href = /^https?:/i.test(url) ? url : `https://${url}`;
+    facts.push(`<a class="pill" href="${esc(href)}" target="_blank" rel="noopener">${esc(kind)}</a>`);
+  }
+
+  $('#evidence-time').textContent = `${esc(resumeSource?.format?.toUpperCase() || 'file')} · ${num(
+    resumeSource?.text?.length || 0
+  )} characters · ${(tookMs / 1000).toFixed(1)}s`;
+
+  const topRoles = (roles || []).slice(0, 2).map((r) => r.title);
+  const topSkills = [...skills].sort((a, b) => b.confidence - a.confidence).slice(0, 4).map((s) => s.label);
+  const verdict =
+    (topRoles.length || topSkills.length) &&
+    `<div class="verdict">
+      ${
+        topRoles.length
+          ? `This resume reads as a <b>${topRoles.join('</b> or <b>')}</b>.`
+          : 'This resume reads as general software work.'
+      }
+      ${
+        topSkills.length
+          ? `Strongest evidence: ${topSkills.map((l) => `<b>${esc(l)}</b>`).join(', ')}.`
+          : ''
+      }
+      ${(resume?.experience?.length || resume?.projects?.length)
+        ? `From ${resume.experience.length} role${resume.experience.length === 1 ? '' : 's'} and ${resume.projects.length} project${resume.projects.length === 1 ? '' : 's'} I recognised.`
+        : 'I could not find an experience or projects section in it.'}
+    </div>`;
+
+  const when = (e) =>
+    [e.start?.raw, e.end?.raw].filter(Boolean).join(' - ') ||
+    (e.start?.iso ? e.start.iso.slice(0, 4) : '');
+
+  const rolesBlock = (resume?.experience || []).length
+    ? `<h3 class="sub">Experience<span class="dim"> — as parsed</span></h3>
+       <div class="resume-list">${resume.experience
+         .map((e) => {
+           if (e.kicker) {
+             return `<div class="resume-note"><span class="pill pill-quiet">${esc(e.kicker)}</span> ${esc(
+               e.bullets.join(' ')
+             )}</div>`;
+           }
+           const org = e.org || e.location || '';
+           return `<div class="resume-row">
+             <div class="resume-when">${esc(when(e))}</div>
+             <div>
+               <div class="resume-what"><b>${esc(e.title || org)}</b>${e.org && e.title ? ` <span class="dim">at ${esc(e.org)}</span>` : ''}${
+                 e.location && !e.org ? ` <span class="dim">· ${esc(e.location)}</span>` : ''
+               }</div>
+               ${e.bullets.length ? `<ul>${e.bullets.map((b) => `<li>${esc(b)}</li>`).join('')}</ul>` : ''}
+             </div>
+           </div>`;
+         })
+         .join('')}</div>`
+    : '';
+
+  const projectsBlock = (resume?.projects || []).length
+    ? `<h3 class="sub">Projects<span class="dim"> — with the ones you named as links</span></h3>
+       <div class="repo-grid">${resume.projects
+         .map((p) => {
+           const href = p.url ? (/^https?:/i.test(p.url) ? p.url : `https://${p.url}`) : null;
+           return `<div class="repo">
+             <div class="repo-top">
+               ${href
+                 ? `<a href="${esc(href)}" target="_blank" rel="noopener">${esc(p.name)}</a>`
+                 : `<span>${esc(p.name)}</span>`}
+               ${p.url ? '<span class="pill pill-good">linked</span>' : ''}
+             </div>
+             <p>${esc(p.description || p.bullets.join(' ') || '—')}</p>
+             ${p.tech?.length ? `<div class="files">${p.tech.slice(0, 6).map((t) => `<span class="file">${esc(t)}</span>`).join('')}</div>` : ''}
+           </div>`;
+         })
+         .join('')}</div>`
+    : '';
+
+  const eduBlock = (resume?.education || []).length
+    ? `<h3 class="sub">Education &amp; additional</h3>
+       <div class="resume-list">${resume.education
+         .map(
+           (e) =>
+             `<div class="resume-row"><div class="resume-when">${esc(
+               e.start?.raw || ''
+             )}</div><div><div class="resume-what"><b>${esc(e.type)}</b></div><div class="dim">${esc(
+               [e.detail, e.school].filter(Boolean).join(' — ')
+             )}</div></div></div>`
+         )
+         .join('')}</div>`
+    : '';
+
+  const warnings = (resume?.warnings || []).length
+    ? `<h3 class="sub">Lines I could not place</h3>
+       <div class="resume-warn">${resume.warnings
+         .slice(0, 6)
+         .map((w) => `<div><code>${esc(typeof w === 'string' ? w : w.text || JSON.stringify(w))}</code></div>`)
+         .join('')}</div>`
+    : '';
+
+  $('#evidence').innerHTML = `
+    <div class="profile-head">
+      <div>
+        <div class="profile-title">${esc(resume?.name || 'Your resume')}</div>
+        ${resume?.headline ? `<div class="dim">${esc(resume.headline)}</div>` : ''}
+      </div>
+      <div class="facts">${facts.join('')}</div>
+    </div>
+
+    ${verdict}
+
+    ${
+      resume?.summary
+        ? `<h3 class="sub">Summary<span class="dim"> — as written</span></h3><p class="resume-summary">${esc(resume.summary)}</p>`
+        : ''
+    }
+
+    ${rolesBlock}
+    ${projectsBlock}
+    ${eduBlock}
+    ${warnings}
   `;
 }
 

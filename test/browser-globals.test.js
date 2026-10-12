@@ -42,12 +42,30 @@ console.log(JSON.stringify({
 }));
 `;
 
-test('a full analysis runs with no `process` global, as in a browser', async () => {
-  const { stdout } = await run(
-    process.execPath,
-    ['--input-type=module', '--eval', BROWSER_RUN],
-    { cwd: ROOT, env: { ...process.env, TEST_TARGET: 'BoogerCheeseOnRye/SecMesh' } },
-  );
+test('a full analysis runs with no `process` global, as in a browser', async (t) => {
+  let stdout;
+  try {
+    ({ stdout } = await run(
+      process.execPath,
+      ['--input-type=module', '--eval', BROWSER_RUN],
+      { cwd: ROOT, env: { ...process.env, TEST_TARGET: 'BoogerCheeseOnRye/SecMesh' } },
+    ));
+  } catch (err) {
+    // This one is the only test that needs the real GitHub API, and anonymous
+    // requests are capped at 60/hour. That is not a failure of the code under
+    // test, so it skips with the fix rather than reporting a red suite. Anything
+    // else -- a ReferenceError on `process`, say -- still fails.
+    const stderr = String(err.stderr || '');
+    if (/RateLimitError|rate limit|\b429\b/.test(stderr)) {
+      t.skip('GitHub anonymous rate limit is exhausted; set GITHUB_TOKEN to run this');
+      return;
+    }
+    if (/ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ETIMEDOUT|fetch failed/.test(stderr)) {
+      t.skip('no network: this is the one test that talks to GitHub');
+      return;
+    }
+    throw err;
+  }
   const out = JSON.parse(stdout.trim().split('\n').pop());
   assert.ok(out.scanned > 0, 'the job feeds answered');
   assert.ok(out.matched > 0, 'openings were scored');

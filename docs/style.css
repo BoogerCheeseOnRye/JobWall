@@ -54,16 +54,17 @@ h1 {
 
 .field-label { display: block; font-weight: 600; margin-bottom: .45rem; }
 
-.field-row { display: flex; gap: .6rem; flex-wrap: wrap; }
+.field-row { display: flex; gap: .6rem; flex-wrap: wrap; align-items: flex-start; }
 
 input[type="text"] {
-  flex: 1 1 340px; min-width: 0;
-  padding: .85rem 1rem;
+  flex: 1 1 57px; min-width: 0;
+  padding: .5rem .85rem;
   font: 15px var(--mono);
   color: var(--text);
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: var(--radius);
+  height: 57px; line-height: 1.2;
 }
 input[type="text"]::placeholder { color: #5c6b7c; }
 input[type="text"]:focus-visible { outline: 2px solid var(--accent-2); outline-offset: 1px; border-color: transparent; }
@@ -77,12 +78,18 @@ button {
 }
 button:active { transform: translateY(1px); }
 
-#go {
-  padding: .9rem 1.4rem; background: var(--accent); color: #04120c; font-weight: 700;
+#go, #go-resume {
+  padding: .5rem 1.2rem; background: var(--accent); color: #04120c; font-weight: 700;
+  height: 57px;
 }
-#go:hover { filter: brightness(1.08); }
-#go[disabled] { opacity: .55; cursor: progress; }
-#go:focus-visible, .chip:focus-visible { outline: 2px solid var(--accent-2); outline-offset: 2px; }
+#go:hover, #go-resume:hover { filter: brightness(1.08); }
+#go[disabled], #go-resume[disabled] { opacity: .55; cursor: progress; }
+#go:focus-visible, #go-resume:focus-visible, .chip:focus-visible { outline: 2px solid var(--accent-2); outline-offset: 2px; }
+
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
 
 .hint { margin: .5rem 0 0; color: var(--dim); font-size: .86rem; }
 .hint code { font-family: var(--mono); color: var(--accent-2); }
@@ -99,6 +106,79 @@ button:active { transform: translateY(1px); }
 .status.busy { color: var(--accent-2); }
 .status .bar { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--accent-2); margin-right: .5rem; animation: pulse 1s ease-in-out infinite; }
 @keyframes pulse { 0%,100% { opacity: .3 } 50% { opacity: 1 } }
+
+/* -------------------------------------------------------------- paths -- */
+/* Two equal doors instead of one form and a divider: the résumé path is a real
+   peer of the repo path now, not an afterthought under it. */
+.entry-paths { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 1.75rem; align-items: start; }
+.path {
+  background: linear-gradient(180deg, var(--panel-2), var(--panel));
+  border: 1px solid var(--line); border-radius: 16px; padding: 1.1rem 1.15rem 1.2rem;
+  display: flex; flex-direction: column;
+  gap: .5rem;
+  min-height: auto;
+  transition: border-color .18s ease, transform .18s ease;
+}
+.path:hover { border-color: #2f4a63; }
+.path:focus-within { border-color: var(--accent-2); }
+.path-code { border-color: #214d3b; background: linear-gradient(180deg, #11221b, var(--panel)); }
+.path-doc { border-color: #24425c; background: linear-gradient(180deg, #14202c, var(--panel)); }
+.path-doc:hover { border-color: var(--accent-2); }
+
+.path-head { display: flex; gap: .8rem; align-items: flex-start; margin-bottom: .85rem; }
+.path-num {
+  font: 700 .74rem/1 var(--mono); letter-spacing: .1em; color: var(--accent);
+  border: 1px solid #2b6b52; background: #12281f; border-radius: 6px; padding: .35rem .45rem;
+}
+.path-doc .path-num { color: var(--accent-2); border-color: #2f5680; background: #131f2e; }
+.path-head h2 { margin: 0 0 .15rem; font-size: 1.05rem; letter-spacing: -.01em; }
+.path-head p { margin: 0; color: var(--dim); font-size: .87rem; line-height: 1.4; }
+.path .field-row { margin-top: .25rem; }
+
+@media (max-width: 780px) { .entry-paths { grid-template-columns: 1fr; } }
+
+/* The three things that happen, in order, so the promise is legible before the
+   first click. */
+.steps {
+  list-style: none; display: flex; flex-wrap: wrap; gap: .5rem 1.75rem;
+  margin: 1.6rem 0 0; padding: 0; font-size: .87rem; color: var(--dim);
+}
+.steps li { display: flex; gap: .5rem; align-items: baseline; }
+.steps b {
+  font: 600 .74rem/1 var(--mono); letter-spacing: .12em; text-transform: uppercase;
+  color: var(--accent-2);
+}
+.steps li::after { content: "→"; color: #33475c; margin-left: 1.25rem; }
+.steps li:last-child::after { content: none; }
+
+h1 .grad {
+  background: linear-gradient(92deg, var(--accent) 8%, var(--accent-2) 92%);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+
+/* ------------------------------------------------------------- export -- */
+.export-head { display: flex; gap: .75rem; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; }
+.export-hint { margin: .7rem 0 1rem; }
+.export-group { margin: 0 0 1.1rem; }
+.export-group-label {
+  font: 600 .72rem/1 var(--mono); letter-spacing: .14em; text-transform: uppercase;
+  color: var(--dim); margin-bottom: .55rem;
+}
+.export-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(215px, 1fr)); gap: .55rem; }
+.export-btn {
+  display: flex; flex-direction: column; gap: .25rem; text-align: left;
+  padding: .7rem .8rem; background: var(--panel-2); border: 1px solid var(--line); color: var(--text);
+}
+.export-btn b { font-size: .92rem; }
+.export-btn span { font-weight: 400; font-size: .78rem; line-height: 1.35; color: var(--dim); }
+.export-btn:hover:not([disabled]) { border-color: var(--accent); }
+.export-btn:focus-visible { outline: 2px solid var(--accent-2); outline-offset: 2px; }
+.export-btn[disabled] { opacity: .5; cursor: progress; }
+.export-btn.busy { position: relative; }
+.export-btn.busy::after {
+  content: ""; position: absolute; right: .7rem; top: .7rem;
+  width: 9px; height: 9px; border-radius: 50%; background: var(--accent-2); animation: pulse 1s ease-in-out infinite;
+}
 
 /* --------------------------------------------------------------- cards -- */
 .main { padding: 2rem 0 1rem; display: grid; gap: 1.25rem; }
@@ -247,3 +327,54 @@ a:focus-visible { outline: 2px solid var(--accent-2); outline-offset: 2px; borde
 @media (prefers-reduced-motion: reduce) {
   * { animation: none !important; transition: none !important; scroll-behavior: auto; }
 }
+
+.file-input {
+  flex: 1; min-width: 0; font: inherit; font-size: .9rem; color: var(--dim);
+  padding: .55rem .7rem; border-radius: 10px; border: 1px dashed var(--line); background: #0d1219;
+}
+.file-input::file-selector-button {
+  font: inherit; font-size: .84rem; margin-right: .7rem; padding: .38rem .7rem; cursor: pointer;
+  border-radius: 8px; border: 1px solid var(--line); background: #141b24; color: var(--text);
+}
+.file-input::file-selector-button:hover { border-color: var(--accent-2); color: var(--accent-2); }
+
+.resume-summary { margin: 0; max-width: 68ch; color: var(--text); }
+.resume-list { display: grid; gap: .7rem; }
+.resume-row {
+  display: grid; grid-template-columns: 118px 1fr; gap: .2rem .9rem; align-items: start;
+  padding: .7rem .8rem; border: 1px solid var(--line); border-radius: 10px; background: #0d1219;
+}
+.resume-when { font: 500 .74rem/1.5 var(--mono); color: var(--dim); letter-spacing: .04em; }
+.resume-what { font-size: .95rem; }
+.resume-row ul { margin: .35rem 0 0; padding-left: 1.1rem; }
+.resume-row li { font-size: .86rem; color: var(--dim); margin: .12rem 0; }
+.resume-note { font-size: .86rem; color: var(--dim); }
+.resume-note .pill { margin-right: .4rem; }
+.resume-warn { font-size: .78rem; color: var(--dim); display: grid; gap: .25rem; }
+.resume-warn code { font-family: var(--mono); color: #d8a657; }
+
+@media (max-width: 620px) {
+  .resume-row { grid-template-columns: 1fr; }
+}
+/* multi-url inputs */
+.url-multi{flex:1 1 340px; display:flex; flex-direction:column; gap:.5rem; min-width:0}
+.url-input{
+  width:100%; padding:.5rem .85rem; font:15px var(--mono); color:var(--text);
+  background:var(--panel); border:1px solid var(--line); border-radius:var(--radius);
+  height:57px; line-height:1.2;
+}
+.add-url{
+  padding:.5rem .9rem; background:var(--panel-2); color:var(--text); border:1px solid var(--line);
+  font-weight:700; border-radius:var(--radius);
+  height: 57px;
+}
+.add-url:hover{border-color:var(--accent)}
+echo "---" 
+tail -12 /home/user/DS/6xpro-projects/JobWall/docs/style.css
+
+/* url rows */
+.url-row{display:flex;gap:.5rem;align-items:center}
+.url-row .url-input{flex:1}
+.url-remove{height:57px;padding:0 1rem;background:var(--panel-2);color:var(--text);border:1px solid var(--line);border-radius:var(--radius);font-weight:700}
+.url-remove:hover{border-color:var(--bad);color:var(--bad)}
+.url-actions{display:flex;gap:.5rem}

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { score } from '../docs/lib/analyze.js';
 import { mount } from '../docs/app.js';
 import { probe, isBrowserMode } from '../docs/api.js';
+import { makeDom, stubResponse } from './helpers/dom.js';
 
 // A stand-in for a fetched repo: same shape analyze() receives from GitHub, no
 // network and no API quota. Live job data is still used, so the rendering is
@@ -39,71 +40,6 @@ const FIXTURE_REPO = {
   ],
   readme: 'Post-quantum mesh defense console. WebGL via three.js r160, node static server, headless self-check suite, TCP/UDP mesh peers, Linux IceWM tray.',
 };
-
-// A DOM small enough to read, big enough to run app.js. This is how the render
-// path gets tested without a browser: if app.js ever reads a field that does not
-// exist or throws on real data, this fails instead of a blank page.
-function makeDom() {
-  const els = new Map();
-  const make = (key) => ({
-    key,
-    _html: '',
-    _text: '',
-    innerHTML: '',
-    textContent: '',
-    className: '',
-    value: '',
-    hidden: false,
-    checked: false,
-    disabled: false,
-    dataset: {},
-    handlers: new Map(),
-    style: {},
-    addEventListener(type, fn) {
-      if (!this.handlers.has(type)) this.handlers.set(type, []);
-      this.handlers.get(type).push(fn);
-    },
-    scrollIntoView() {},
-    requestSubmit() {
-      for (const fn of this.handlers.get('submit') || []) fn({ preventDefault() {} });
-    },
-    fire(type, ev = {}) {
-      for (const fn of this.handlers.get(type) || []) fn(ev);
-    },
-  });
-  const get = (sel) => {
-    if (!els.has(sel)) {
-      const el = make(sel);
-      Object.defineProperty(el, 'innerHTML', {
-        get() { return this._html; },
-        set(v) { this._html = String(v); },
-      });
-      Object.defineProperty(el, 'textContent', {
-        get() { return this._text; },
-        set(v) { this._text = String(v); },
-      });
-      els.set(sel, el);
-    }
-    return els.get(sel);
-  };
-  return {
-    els,
-    get,
-    document: {
-      querySelector: get,
-      querySelectorAll: () => [],
-      addEventListener() {},
-    },
-  };
-}
-
-// A stand-in for Response: the shim reads .text() and parses it itself, so
-// that a host answering with an HTML error page can never reach res.json() and
-// surface as "Unexpected token '<'".
-function stubResponse(body, { ok = true, status = 200 } = {}) {
-  const text = async () => (typeof body === 'string' ? body : JSON.stringify(body));
-  return { ok, status, statusText: '', text, json: async () => JSON.parse(await text()) };
-}
 
 test('the page renders real results from a real submission', async () => {
   const dom = makeDom();
