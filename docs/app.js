@@ -1,6 +1,7 @@
 import { analyze as runAnalyze, analyzeMany, analyzeResume, probe, isBrowserMode } from './api.js';
 import { readError } from './lib/resume-source.js';
 import { buildModel, exportResume, FORMATS } from './lib/resume-export.js';
+import { resumePreview, draftModel, manifestRows } from './lib/export-preview.js';
 import { SCOPES, DEFAULT_SCOPE } from './lib/geo.js';
 import { boardLinks, whereForScope } from './lib/search.js';
 
@@ -55,6 +56,7 @@ const esc = (s) =>
   String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 const num = (n) => Number(n || 0).toLocaleString();
+const plural = (n, one, many) => `${num(n)} ${n === 1 ? one : many}`;
 const ago = (iso) => {
   if (!iso) return 'unknown date';
   const days = Math.floor((Date.now() - new Date(iso).getTime()) / 86_400_000);
@@ -65,6 +67,20 @@ const ago = (iso) => {
   return `${Math.floor(days / 365)}y ago`;
 };
 
+// Dates in the source are ISO timestamps; the card wants the day and the
+// message wants one line. Neither function invents a value for a missing field.
+const dateShort = (iso) => {
+  if (!iso) return null;
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toISOString().slice(0, 10);
+};
+
+const clipText = (text, max = 90) => {
+  const value = String(text || '').replace(/\s+/g, ' ').trim();
+  return value.length > max ? `${value.slice(0, max - 1)}…` : value;
+};
+
 const VERDICT_PILL = {
   strong: 'pill-good',
   likely: 'pill-good',
@@ -73,6 +89,22 @@ const VERDICT_PILL = {
 };
 
 let lastResult = null;
+let activeView = 'dossier';
+
+// The deck is one surface, not a page of cards. Tabs only change which readout
+// is visible; the parsed subject stays loaded in all three.
+function showView(name) {
+  activeView = ['dossier', 'market', 'export'].includes(name) ? name : 'dossier';
+  for (const view of ['dossier', 'market', 'export']) {
+    const tab = $(`#tab-${view}`);
+    const panel = $(`#view-${view}`);
+    if (tab) {
+      tab.classList.toggle('is-active', view === activeView);
+      tab.setAttribute('aria-selected', view === activeView ? 'true' : 'false');
+    }
+    if (panel) panel.hidden = view !== activeView;
+  }
+}
 
 // Exported so the wiring can be exercised against a stub DOM in tests, and so
 // nothing runs twice if the page is ever mounted again.
@@ -83,6 +115,9 @@ export function mount() {
     const input = addUrlField();
     if (input && input.focus) input.focus();
   });
+  for (const name of ['dossier', 'market', 'export']) {
+    $(`#tab-${name}`).addEventListener('click', () => showView(name));
+  }
 
   $('#form-resume').addEventListener('submit', (e) => {
     e.preventDefault();
@@ -142,6 +177,7 @@ export function mount() {
   // the page is being served statically.
   probe()
     .then((feeds) => {
+      $('#hud-engine').textContent = isBrowserMode() ? 'BROWSER' : 'NODE';
       $('#foot-feeds').textContent = isBrowserMode()
         ? (feeds.length ? `${feeds.map((s) => `${s.name} (${s.ok ? s.count : 'down'})`).join(' · ')} · in your browser` : 'feeds unavailable in your browser')
         : feeds.map((s) => `${s.name} ${s.ok ? `(${s.count})` : `(down)`}`).join(' · ');
@@ -221,6 +257,12 @@ function render(data) {
   renderSearch(data);
   renderExport(data);
   $('#results').hidden = false;
+  $('#boot').hidden = true;
+  $('#hud-mode').textContent = data.resume ? 'RESUME LOCK' : 'PROFILE LINK';
+  $('#deck-subject').textContent = data.resume
+    ? `${data.resume.name || 'Résumé'} // DOCUMENT`
+    : `${data.profile?.name || 'Subject'}${data.profile?.repo ? ` // ${data.profile.repo}` : ' // PROFILE'}`;
+  showView('dossier');
   $('#foot-feeds').textContent = data.sources
     .map((s) => `${s.name} ${s.ok ? `(${s.count})` : `(down: ${esc(s.error || 'error')})`}`)
     .join(' · ');
@@ -234,19 +276,9 @@ function render(data) {
 // The download is a Blob, so the resume never touches a network again.
 let exportModel = null;
 
-function renderExport(data) {
-  const section = $('#export-section');
-  if (!data.resume) {
-    section.hidden = true;
-    exportModel = null;
-    return;
-  }
-  section.hidden = false;
-  exportModel = buildModel(data.resume);
-  const model = exportModel;
-
+function formatButtons() {
   const groups = [...new Set(FORMATS.map((f) => f.group))];
-  const buttons = groups
+  return groups
     .map((group) => {
       const specs = FORMATS.filter((f) => f.group === group);
       return `<div class="export-group">
@@ -263,31 +295,132 @@ function renderExport(data) {
       </div>`;
     })
     .join('');
+}
 
-  const warnings = (data.resume.warnings || []).length
-    ? `<p class="hint export-hint">${
-        data.resume.warnings.length === 1
-          ? 'One line could not be placed, so it is not in these files.'
-          : `${data.resume.warnings.length} lines could not be placed, so they are not in these files.`
-      } Fix it in the source and read the file again.</p>`
-    : '';
+function sectionCount(section) {
+  if (section.kind === 'entries') {
+    return `${section.entries.length} ${section.entries.length === 1 ? 'entry' : 'entries'}`;
+  }
+  if (section.kind === 'groups') {
+    const items = section.groups.reduce((n, group) => n + group.items.length, 0);
+    return `${section.groups.length} ${section.groups.length === 1 ? 'group' : 'groups'} · ${items} items`;
+  }
+  return `${section.runs.reduce((n, run) => n + run.items.length, 0)} lines`;
+}
 
+export function renderExport(data) {
+  const section = $('#export-section');
+  const empty = $('#export-empty');
+  if (!data) {
+    section.hidden = true;
+    if (empty) empty.hidden = false;
+    exportModel = null;
+    return;
+  }
+  section.hidden = false;
+  if (empty) empty.hidden = true;
+
+  // A resume is the only source that can honestly produce a resume document.
+  // It previews the exact model every download uses.
+  if (data.resume) {
+    const model = buildModel(data.resume);
+    exportModel = model;
+    const warnings = (data.resume.warnings || []).length
+      ? `<p class="hint export-hint">${
+          data.resume.warnings.length === 1
+            ? 'One line could not be placed, so it is not in these files.'
+            : `${data.resume.warnings.length} lines could not be placed, so they are not in these files.`
+        } Fix it in the source and read the file again.</p>`
+      : '';
+    const rows = [
+      ['name', model.meta.name],
+      ['contact', `${model.meta.contacts.length} detail${model.meta.contacts.length === 1 ? '' : 's'}`],
+      ...(model.summary ? [['summary', 'included']] : []),
+      ...model.sections.map((s) => [s.title, sectionCount(s)]),
+    ];
+    $('#export').innerHTML = `
+      <div class="export-head">
+        <div>
+          <div class="profile-title">${esc(model.meta.name)}</div>
+          <div class="dim">${model.sections.length} section${model.sections.length === 1 ? '' : 's'} · ${num(
+            model.meta.contacts.length
+          )} contact detail${model.meta.contacts.length === 1 ? '' : 's'}</div>
+        </div>
+        <div class="facts">
+          <span class="pill pill-good">print preview</span>
+          <button type="button" class="print-preview">Print / Save PDF</button>
+        </div>
+      </div>
+      <p class="hint export-hint">This sheet is the document, before it becomes a file. The downloads below carry the same names, sections and order.</p>
+      <div class="export-layout">
+        <div class="export-preview-col">${resumePreview(model)}</div>
+        <aside class="export-rail">
+          <div class="export-rail-label">Included in this export</div>
+          <div class="export-manifest">${manifestRows(rows)}</div>
+          ${warnings}
+          <div class="export-rail-label" style="margin-top:.8rem">Download formats</div>
+          ${formatButtons()}
+        </aside>
+      </div>`;
+    return;
+  }
+
+  // A profile has no parsed document yet, so it becomes a working draft built
+  // from the evidence that does exist: identity, inferred target roles,
+  // inferred skills, and public repositories with their real metadata. Nothing
+  // claims a job or a degree the profile cannot support.
+  const model = draftModel(data);
+  exportModel = model;
+  const { profile = {}, roles = [], skills = [] } = data;
+  const sampled = (profile.sampledRepos || []).length;
+  const total = profile.repoTotal || profile.publicRepos || 0;
+  const commits = (profile.repos || []).reduce((n, r) => n + (r.commits || 0), 0);
+  const rows = [
+    ['name', model.meta.name],
+    ['contact', `${model.meta.contacts.length} detail${model.meta.contacts.length === 1 ? '' : 's'}`],
+    ['summary', 'generated from evidence'],
+    ...model.sections.map((s) => [s.title, sectionCount(s)]),
+    ['repos read', `${num(sampled)} of ${num(total)}`],
+    ...(commits ? [['commits seen', num(commits)]] : []),
+  ];
   $('#export').innerHTML = `
     <div class="export-head">
       <div>
         <div class="profile-title">${esc(model.meta.name)}</div>
-        <div class="dim">${model.sections.length} section${model.sections.length === 1 ? '' : 's'} · ${num(
-          model.meta.contacts.length
-        )} contact detail${model.meta.contacts.length === 1 ? '' : 's'}</div>
+        <div class="dim">Draft résumé · built from public evidence</div>
       </div>
-      <div class="facts"><span class="pill pill-good">built here</span></div>
+      <div class="facts">
+        <span class="pill pill-mid">working draft</span>
+        <button type="button" class="print-preview">Print / Save PDF</button>
+      </div>
     </div>
-    <p class="hint export-hint">Same content, ${FORMATS.length} formats. Nothing is uploaded — the bytes are built in this tab and handed straight to your downloads.</p>
-    ${warnings}
-    ${buttons}`;
+    <p class="hint export-hint">This is a real résumé draft, not a placeholder: the summary, roles and skills are derived from ${num(
+      (profile.repos || []).length
+    )} public repositor${(profile.repos || []).length === 1 ? 'y' : 'ies'}. Add a parsed document later to replace the inferred sections with your own experience and education.</p>
+    <div class="export-layout">
+      <div class="export-preview-col">${resumePreview(model)}</div>
+      <aside class="export-rail">
+        <div class="export-rail-label">Included in this draft</div>
+        <div class="export-manifest">${manifestRows(rows)}</div>
+        <div class="export-note">
+          <b>Draft // evidence only</b>
+          <p>Target roles and skills are inferred and labelled as such. Experience and education are left out because this source has none — not because they were dropped. Every download carries the same draft.</p>
+        </div>
+        <div class="export-rail-label" style="margin-top:.8rem">Download formats</div>
+        ${formatButtons()}
+      </aside>
+    </div>`;
 }
 
 async function onExportClick(event) {
+  const print = event.target.closest('.print-preview');
+  if (print) {
+    if (typeof window !== 'undefined' && typeof window.print === 'function') {
+      setStatus('', 'Opening the print dialog. Choose <strong>Save as PDF</strong> to keep a copy.');
+      window.print();
+    }
+    return;
+  }
   const button = event.target.closest('.export-btn');
   if (!button) return;
   if (!exportModel) return;
@@ -317,6 +450,36 @@ async function onExportClick(event) {
 }
 
 // ------------------------------------------------------------- 1. evidence
+function tile(className, label, meta, body) {
+  return `<section class="tile ${className}">
+    <div class="tile-head">
+      <span class="tile-label">${esc(label)}</span>
+      ${meta ? `<span class="tile-meta">${esc(meta)}</span>` : ''}
+    </div>
+    ${body}
+  </section>`;
+}
+
+function skillGroupsBlock(groups) {
+  return `<div class="skill-groups scroll-area">${[...groups.entries()]
+    .map(
+      ([cat, items]) => `<div class="skill-group">
+        <h3>${esc(cat.charAt(0).toUpperCase() + cat.slice(1))}</h3>
+        ${items
+          .map(
+            (s) => `<div class="skill">
+              <span class="skill-name">${esc(s.label)}</span>
+              <span class="skill-why">${(s.why || [])
+                .map((w) => `<span title="${esc(w.text)}">${esc(w.text.replace(/^(language|dependency|README|topic|project description|file):\s*/, ''))}</span>`)
+                .join('') || '<span>—</span>'}</span>
+            </div>`
+          )
+          .join('')}
+      </div>`
+    )
+    .join('')}</div>`;
+}
+
 function renderEvidence(data) {
   if (data.resume) return renderResumeEvidence(data);
   const { profile, skills, roles, tookMs } = data;
@@ -391,76 +554,111 @@ function renderEvidence(data) {
           </div>`;
         })
         .join('')}</div>`
-    : '';
+    : '<p class="resume-summary">No language bytes reported for this source.</p>';
 
   const deps = (profile.deps || []).slice(0, 30);
   const notable = (profile.notablePaths || []).slice(0, 30);
   const biggest = repos[0] ? repos[0].sizeKb || 0 : 1;
 
-  // Every repo is listed. Truncating this list was what made a 7.9 MB game
-  // look like it did not exist, so the grid now runs to the end and is
-  // ordered by substance, with a mark for the ones read in depth.
+  // Every repo is listed with everything the source actually returned: dates,
+  // counts, topics, license and the last commit. Missing fields are omitted
+  // rather than filled in, so an incomplete API answer stays visible.
   const repoGrid = repos.length
-    ? `<h3 class="sub">Projects<span class="dim"> — ranked by size, not by recency</span></h3>
-       <div class="repo-grid">${repos
-         .map(
-           (r) => `<div class="repo${r.sampled ? ' repo-read' : ''}">
-             <div class="repo-top">
-               <a href="${esc(r.url)}" target="_blank" rel="noopener">${esc(r.name)}</a>
-               ${r.sampled ? '<span class="pill pill-good">read in full</span>' : ''}
-             </div>
-             <p>${esc(r.description || '—')}</p>
-             <div class="repo-size">
-               <span class="lang-track"><span class="lang-fill" style="width:${Math.min(100, ((r.sizeKb || 0) / biggest) * 100).toFixed(1)}%"></span></span>
-               <small>${esc(r.language || '—')} · ${num(r.sizeKb || 0)} KB · ${ago(r.pushedAt)}</small>
-             </div>
-           </div>`
-         )
-         .join('')}</div>`
-    : '';
+    ? `<div class="repo-grid scroll-area tall">${repos
+        .map((r) => {
+          const facts = [];
+          const fact = (label, value) => {
+            if (value !== null && value !== undefined && value !== '') facts.push([label, value]);
+          };
+          if (r.stars) fact('stars', num(r.stars));
+          if (r.forks) fact('forks', num(r.forks));
+          fact('created', dateShort(r.createdAt));
+          fact('pushed', r.pushedAt ? `${dateShort(r.pushedAt)} · ${ago(r.pushedAt)}` : null);
+          if (r.commits != null) fact('commits', num(r.commits));
+          if (r.openIssues) fact('issues', num(r.openIssues));
+          fact('license', r.license);
+          fact('branch', r.defaultBranch);
+          return `<div class="repo${r.sampled ? ' repo-read' : ''}">
+            <div class="repo-top">
+              <a href="${esc(r.url)}" target="_blank" rel="noopener">${esc(r.name)}</a>
+              <span class="repo-badges">
+                ${r.sampled ? '<span class="pill pill-good">read in full</span>' : ''}
+                ${r.archived ? '<span class="pill pill-warn">archived</span>' : ''}
+                ${r.fork ? '<span class="pill pill-quiet">fork</span>' : ''}
+              </span>
+            </div>
+            <p>${esc(r.description || '—')}</p>
+            <div class="repo-size">
+              <span class="lang-track"><span class="lang-fill" style="width:${Math.min(100, ((r.sizeKb || 0) / biggest) * 100).toFixed(1)}%"></span></span>
+              <small>${esc(r.language || '—')} · ${num(r.sizeKb || 0)} KB</small>
+            </div>
+            ${facts.length ? `<div class="repo-meta">${facts
+              .map(([label, value]) => `<span><b>${esc(label)}</b>${esc(value)}</span>`)
+              .join('')}</div>` : ''}
+            ${(r.topics || []).length ? `<div class="repo-topics">${r.topics
+              .map((t) => `<span class="file">${esc(t)}</span>`)
+              .join('')}</div>` : ''}
+            ${r.lastCommitMessage ? `<div class="repo-commit">${r.lastCommitSha ? `<code>${esc(r.lastCommitSha)}</code>` : ''}<span>${esc(clipText(r.lastCommitMessage, 72))}</span></div>` : ''}
+          </div>`;
+        })
+        .join('')}</div>`
+    : '<p class="resume-summary">No project metadata was returned.</p>';
 
-  $('#evidence').innerHTML = `
+  const roleChips = (roles || [])
+    .slice(0, 4)
+    .map((r) => `<span class="skill-chip">${esc(r.title)} <b>${r.fit}%</b></span>`)
+    .join('');
+  const topSkillChips = [...skills]
+    .sort((a, b) => b.confidence - a.confidence)
+    .slice(0, 10)
+    .map((s) => `<span class="skill-chip">${esc(s.label)} <b>${Math.round((s.confidence || 0) * 100)}%</b></span>`)
+    .join('');
+
+  const sourceMeta = isProfile ? `${num(totalRepos)} public repos` : `${num(profile.fileCount || 0)} files`;
+  const diagnostics = `
+    <div class="diag-grid">
+      <div class="diag"><b>Source</b><span>${isProfile ? 'GitHub profile' : 'GitHub repo'} · ${esc(profile.handle || profile.name)}</span></div>
+      <div class="diag"><b>Deep read</b><span>${esc(sampled.length ? sampled.join(', ') : 'metadata only')}</span></div>
+      <div class="diag"><b>Language bytes</b><span>${esc(langs.map(([n]) => n).join(', ') || 'none reported')}</span></div>
+      <div class="diag"><b>Observed</b><span>${esc(sourceMeta)} · ${num(deps.length)} dependencies · ${num(notable.length)} notable files</span></div>
+    </div>`;
+
+  const identity = `
     <div class="profile-head">
       <div>
         <div class="profile-title">
           <a href="${esc(profile.url)}" target="_blank" rel="noopener">${esc(profile.name)}</a>
           ${profile.repo ? `<span class="dim"> / ${esc(profile.repo)}</span>` : ''}
         </div>
+        ${profile.description || profile.bio ? `<p class="profile-desc">${esc(profile.description || profile.bio)}</p>` : ''}
       </div>
       <div class="facts">${facts.join('')}</div>
     </div>
+    <div class="stat-grid">
+      <div class="stat"><b>${num(totalRepos)}</b><span>public repos</span></div>
+      <div class="stat"><b>${num(sampled.length)}</b><span>read in full</span></div>
+      <div class="stat"><b>${num(profile.stars || 0)}</b><span>stars</span></div>
+      <div class="stat"><b>${num(profile.followers || 0)}</b><span>followers</span></div>
+    </div>`;
 
-    ${verdict}
-    ${langBlock}
+  const signal = `${verdict}
+    <div class="skill-chips">${roleChips || '<span class="skill-chip">No role cleared the bar</span>'}</div>
+    <div class="skill-chips" style="margin-top:.4rem">${topSkillChips || '<span class="skill-chip">No skill evidence</span>'}</div>`;
 
-    <div class="skill-groups">
-      ${[...groups.entries()]
-        .map(
-          ([cat, items]) => `<div class="skill-group">
-            <h3>${esc(cat.charAt(0).toUpperCase() + cat.slice(1))}</h3>
-            ${items
-              .map(
-                (s) => `<div class="skill">
-                  <span class="skill-name">${esc(s.label)}</span>
-                  <span class="skill-why">${(s.why || [])
-                    .map((w) => `<span title="${esc(w.text)}">${esc(w.text.replace(/^(language|dependency|README|topic|project description|file):\s*/, ''))}</span>`)
-                    .join('') || '<span>—</span>'}</span>
-                </div>`
-              )
-              .join('')}
-          </div>`
-        )
-        .join('')}
-    </div>
-
-    ${deps.length ? `<h3 class="sub">Declared dependencies<span class="dim"> — from package.json</span></h3>
+  const filesBlock = `${deps.length ? `<div class="tile-head"><span class="tile-label">Declared dependencies</span><span class="tile-meta">manifest</span></div>
       <div class="files">${deps.map((d) => `<span class="file">${esc(d)}</span>`).join('')}</div>` : ''}
+    ${notable.length ? `<div class="tile-head" style="margin-top:.6rem"><span class="tile-label">Files that shaped the read</span><span class="tile-meta">${num(notable.length)}</span></div>
+      <div class="files">${notable.map((p) => `<span class="file">${esc(p)}</span>`).join('')}</div>` : ''}`;
 
-    ${notable.length ? `<h3 class="sub">Files that shaped the read</h3>
-      <div class="files">${notable.map((p) => `<span class="file">${esc(p)}</span>`).join('')}</div>` : ''}
-
-    ${repoGrid}
-  `;
+  $('#evidence').innerHTML = `<div class="dossier">
+    ${tile('tile-id', `Identity // ${isProfile ? 'profile' : 'repository'}`, sourceMeta, identity)}
+    ${tile('tile-signal', 'Best-fit signal', 'evidence only', signal)}
+    ${tile('tile-langs', 'Language mix', 'committed bytes', langBlock)}
+    ${tile('tile-skills', 'Skill evidence', `${groups.size} groups`, skillGroupsBlock(groups))}
+    ${tile('tile-diagnostics', 'Diagnostics', `${(tookMs / 1000).toFixed(1)}s read`, diagnostics)}
+    ${tile('tile-projects', 'Project registry', 'size → stars → recency', repoGrid)}
+    ${tile('tile-files', 'Raw material', 'manifest + paths', filesBlock)}
+  </div>`;
 }
 
 // A resume is evidence too, so it gets the same first slot: what I read, before
@@ -507,91 +705,138 @@ function renderResumeEvidence({ skills, roles, tookMs, resume, resumeSource }) {
     (e.start?.iso ? e.start.iso.slice(0, 4) : '');
 
   const rolesBlock = (resume?.experience || []).length
-    ? `<h3 class="sub">Experience<span class="dim"> — as parsed</span></h3>
-       <div class="resume-list">${resume.experience
-         .map((e) => {
-           if (e.kicker) {
-             return `<div class="resume-note"><span class="pill pill-quiet">${esc(e.kicker)}</span> ${esc(
-               e.bullets.join(' ')
-             )}</div>`;
-           }
-           const org = e.org || e.location || '';
-           return `<div class="resume-row">
-             <div class="resume-when">${esc(when(e))}</div>
-             <div>
-               <div class="resume-what"><b>${esc(e.title || org)}</b>${e.org && e.title ? ` <span class="dim">at ${esc(e.org)}</span>` : ''}${
-                 e.location && !e.org ? ` <span class="dim">· ${esc(e.location)}</span>` : ''
-               }</div>
-               ${e.bullets.length ? `<ul>${e.bullets.map((b) => `<li>${esc(b)}</li>`).join('')}</ul>` : ''}
-             </div>
-           </div>`;
-         })
-         .join('')}</div>`
-    : '';
+    ? `<div class="timeline scroll-area tall">${resume.experience
+        .map((e) => {
+          if (e.kicker) {
+            return `<div class="resume-note"><span class="pill pill-quiet">${esc(e.kicker)}</span> ${esc(
+              e.bullets.join(' ')
+            )}</div>`;
+          }
+          const org = e.org || e.location || '';
+          return `<div class="tl-entry">
+            <div class="tl-top">
+              <span class="tl-title">${esc(e.title || org)}</span>
+              <span class="tl-when">${esc(when(e))}</span>
+            </div>
+            ${e.org && e.title ? `<div class="tl-org">${esc(e.org)}${e.location ? ` · ${esc(e.location)}` : ''}</div>` : (e.location && !e.org ? `<div class="tl-org">${esc(e.location)}</div>` : '')}
+            ${e.bullets.length ? `<ul class="tl-bullets">${e.bullets.map((b) => `<li>${esc(b)}</li>`).join('')}</ul>` : ''}
+          </div>`;
+        })
+        .join('')}</div>`
+    : '<p class="resume-summary">No experience section was recognised. The raw text is still available through the export formats.</p>';
 
   const projectsBlock = (resume?.projects || []).length
-    ? `<h3 class="sub">Projects<span class="dim"> — with the ones you named as links</span></h3>
-       <div class="repo-grid">${resume.projects
-         .map((p) => {
-           const href = p.url ? (/^https?:/i.test(p.url) ? p.url : `https://${p.url}`) : null;
-           return `<div class="repo">
-             <div class="repo-top">
-               ${href
-                 ? `<a href="${esc(href)}" target="_blank" rel="noopener">${esc(p.name)}</a>`
-                 : `<span>${esc(p.name)}</span>`}
-               ${p.url ? '<span class="pill pill-good">linked</span>' : ''}
-             </div>
-             <p>${esc(p.description || p.bullets.join(' ') || '—')}</p>
-             ${p.tech?.length ? `<div class="files">${p.tech.slice(0, 6).map((t) => `<span class="file">${esc(t)}</span>`).join('')}</div>` : ''}
-           </div>`;
-         })
-         .join('')}</div>`
-    : '';
+    ? `<div class="repo-grid scroll-area tall">${resume.projects
+        .map((p) => {
+          const href = p.url ? (/^https?:/i.test(p.url) ? p.url : `https://${p.url}`) : null;
+          return `<div class="repo">
+            <div class="repo-top">
+              ${href
+                ? `<a href="${esc(href)}" target="_blank" rel="noopener">${esc(p.name)}</a>`
+                : `<span>${esc(p.name)}</span>`}
+              ${p.url ? '<span class="pill pill-good">linked</span>' : ''}
+            </div>
+            ${p.description ? `<p>${esc(p.description)}</p>` : ''}
+            ${(p.bullets || []).length ? `<ul class="repo-bullets">${p.bullets.map((b) => `<li>${esc(b)}</li>`).join('')}</ul>` : ''}
+            ${p.tech?.length ? `<div class="repo-topics">${p.tech.map((t) => `<span class="file">${esc(t)}</span>`).join('')}</div>` : ''}
+          </div>`;
+        })
+        .join('')}</div>`
+    : '<p class="resume-summary">No project section was recognised.</p>';
 
   const eduBlock = (resume?.education || []).length
-    ? `<h3 class="sub">Education &amp; additional</h3>
-       <div class="resume-list">${resume.education
-         .map(
-           (e) =>
-             `<div class="resume-row"><div class="resume-when">${esc(
-               e.start?.raw || ''
-             )}</div><div><div class="resume-what"><b>${esc(e.type)}</b></div><div class="dim">${esc(
-               [e.detail, e.school].filter(Boolean).join(' — ')
-             )}</div></div></div>`
-         )
-         .join('')}</div>`
-    : '';
+    ? `<div class="resume-list scroll-area">${resume.education
+        .map(
+          (e) =>
+            `<div class="resume-row"><div class="resume-when">${esc(
+              e.start?.raw || ''
+            )}</div><div><div class="resume-what"><b>${esc(e.type)}</b></div><div class="dim">${esc(
+              [e.detail, e.school].filter(Boolean).join(' — ')
+            )}</div></div></div>`
+        )
+        .join('')}</div>`
+    : '<p class="resume-summary">No education section was recognised.</p>';
 
   const warnings = (resume?.warnings || []).length
-    ? `<h3 class="sub">Lines I could not place</h3>
-       <div class="resume-warn">${resume.warnings
-         .slice(0, 6)
-         .map((w) => `<div><code>${esc(typeof w === 'string' ? w : w.text || JSON.stringify(w))}</code></div>`)
-         .join('')}</div>`
-    : '';
+    ? `<div class="resume-warn">${resume.warnings
+        .slice(0, 8)
+        .map((w) => `<div><code>${esc(typeof w === 'string' ? w : w.text || JSON.stringify(w))}</code></div>`)
+        .join('')}</div>`
+    : '<div class="diag"><b>Parse status</b><span>All major sections recognised.</span></div>';
 
-  $('#evidence').innerHTML = `
+  // Resume skills come from the score, which carries the same evidence shape as
+  // a repo scan. When the parser also found explicit skill groups, show those
+  // categories rather than flattening them into one anonymous list.
+  const groups = new Map();
+  for (const s of skills) {
+    if (!groups.has(s.category)) groups.set(s.category, []);
+    groups.get(s.category).push(s);
+  }
+  const parsedSkillGroups = (resume?.skills || []).length
+    ? resume.skills.map((g) => `<div class="skill-group">
+        <h3>${esc(g.category || 'Skills')}</h3>
+        <div class="skill-chips">${g.items.map((item) => `<span class="skill-chip">${esc(item)}</span>`).join('')}</div>
+      </div>`).join('')
+    : '';
+  const skillBlock = parsedSkillGroups
+    ? `<div class="scroll-area tall">${parsedSkillGroups}</div>`
+    : skillGroupsBlock(groups);
+  // A resume with no skills section still produces scored skills. Calling that
+  // "as stated" would be a lie, so name the tile for what it is: inference.
+  const declaredSkills = resume?.skillItems?.length || 0;
+  const skillTileTitle = declaredSkills ? 'Skills as stated' : 'Skills // inferred';
+  const skillTileMeta = declaredSkills
+    ? plural(declaredSkills, 'item', 'items')
+    : plural((skills || []).length, 'signal', 'signals');
+
+  const roleChips = (roles || [])
+    .slice(0, 4)
+    .map((r) => `<span class="skill-chip">${esc(r.title)} <b>${r.fit}%</b></span>`)
+    .join('');
+  const topSkillChips = [...skills]
+    .sort((a, b) => b.confidence - a.confidence)
+    .slice(0, 10)
+    .map((s) => `<span class="skill-chip">${esc(s.label)} <b>${Math.round((s.confidence || 0) * 100)}%</b></span>`)
+    .join('');
+
+  const identity = `
     <div class="profile-head">
       <div>
         <div class="profile-title">${esc(resume?.name || 'Your resume')}</div>
-        ${resume?.headline ? `<div class="dim">${esc(resume.headline)}</div>` : ''}
+        ${resume?.headline ? `<p class="profile-desc">${esc(resume.headline)}</p>` : ''}
       </div>
       <div class="facts">${facts.join('')}</div>
     </div>
+    ${resume?.summary ? `<p class="resume-summary" style="margin-top:.55rem">${esc(resume.summary)}</p>` : ''}
+    <div class="stat-grid">
+      <div class="stat"><b>${num(resume?.experience?.length || 0)}</b><span>roles</span></div>
+      <div class="stat"><b>${num(resume?.projects?.length || 0)}</b><span>projects</span></div>
+      <div class="stat"><b>${num(resume?.skillItems?.length || 0)}</b><span>declared skills</span></div>
+      <div class="stat"><b>${num(resume?.education?.length || 0)}</b><span>education</span></div>
+    </div>`;
 
-    ${verdict}
+  const signal = `${verdict}
+    <div class="skill-chips">${roleChips || '<span class="skill-chip">No role cleared the bar</span>'}</div>
+    <div class="skill-chips" style="margin-top:.4rem">${topSkillChips || '<span class="skill-chip">No skill evidence</span>'}</div>`;
 
-    ${
-      resume?.summary
-        ? `<h3 class="sub">Summary<span class="dim"> — as written</span></h3><p class="resume-summary">${esc(resume.summary)}</p>`
-        : ''
-    }
+  const diagnostics = `
+    <div class="diag-grid">
+      <div class="diag"><b>Source</b><span>${esc(resumeSource?.format?.toUpperCase() || 'file')} · ${num(resumeSource?.text?.length || 0)} characters</span></div>
+      <div class="diag"><b>Extracted</b><span>${num(resume?.stats?.sections || 0)} sections · ${num(resume?.stats?.skills || 0)} skills · ${num(resume?.stats?.experience || 0)} roles · ${num(resume?.stats?.projects || 0)} projects</span></div>
+      <div class="diag"><b>Read time</b><span>${(tookMs / 1000).toFixed(1)}s · parsed in this tab</span></div>
+      <div class="diag ${(resume?.warnings || []).length ? 'warn' : ''}"><b>Warnings</b><span>${esc((resume?.warnings || []).length ? `${resume.warnings.length} section${resume.warnings.length === 1 ? '' : 's'} need attention` : 'none')}</span></div>
+    </div>
+    ${warnings}`;
 
-    ${rolesBlock}
-    ${projectsBlock}
-    ${eduBlock}
-    ${warnings}
-  `;
+  $('#evidence').innerHTML = `<div class="dossier">
+    ${tile('tile-id', 'Identity // résumé', resumeSource?.format?.toUpperCase() || 'file', identity)}
+    ${tile('tile-signal', 'Best-fit signal', 'evidence only', signal)}
+    ${tile('tile-skills', skillTileTitle, skillTileMeta, skillBlock)}
+    ${tile('tile-exp', 'Experience timeline', plural(resume?.experience?.length || 0, 'role', 'roles'), rolesBlock)}
+    ${tile('tile-projects', 'Project registry', plural(resume?.projects?.length || 0, 'entry', 'entries'), projectsBlock)}
+    ${tile('tile-diagnostics', 'Diagnostics', `${(tookMs / 1000).toFixed(1)}s`, diagnostics)}
+    ${tile('tile-edu', 'Education & additional', plural(resume?.education?.length || 0, 'entry', 'entries'), eduBlock)}
+  </div>`;
 }
 
 // ---------------------------------------------------------------- 2. roles

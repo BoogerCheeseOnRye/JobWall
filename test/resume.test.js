@@ -312,13 +312,52 @@ test('a resume with no recognisable headings still yields a name and sections', 
   assert.ok(Array.isArray(r.projects));
 });
 
+// Real exports use title case, put the employer above the title, and label
+// projects inside one bullet. This is the layout that the public samples kept
+// breaking on, reduced to forgettable names.
+test('title-case headings, employer bullets and labeled projects parse together', () => {
+  const r = parseResume(`JANE Q. SAMPLE
+jane.sample@example.com
+
+Education
+• State University
+Bachelor of Science in Computer Science Aug 2010 - May 2014
+
+Experience
+• Sample Corp Austin, TX
+Software Engineer Jan 2022 - Present
+• Built the ingestion pipeline.
+
+Projects
+• Sample Toolkit : A tiny utility with a documented CLI.
+`);
+
+  assert.equal(r.name, 'Jane Q. Sample');
+  assert.equal(r.stats.sections, 3);
+  assert.equal(r.experience.length, 1);
+  assert.equal(r.experience[0].title, 'Software Engineer');
+  assert.equal(r.experience[0].org, 'Sample Corp');
+  assert.equal(r.experience[0].location, 'Austin, TX');
+  assert.equal(r.projects.length, 1);
+  assert.equal(r.projects[0].name, 'Sample Toolkit');
+  assert.equal(r.education.length, 1);
+  assert.equal(r.education[0].school, 'State University');
+  assert.match(r.education[0].detail, /Bachelor of Science/);
+});
+
+test('a contact label on the name line does not become part of the name', () => {
+  const r = parseResume(`JANE Q. SAMPLE Email: jane.sample@example.com
+jane.sample.dev | (555) 010-1234
+`);
+  assert.equal(r.name, 'Jane Q. Sample');
+  assert.equal(r.contact.email, 'jane.sample@example.com');
+  assert.equal(r.contact.links.website, 'jane.sample.dev');
+});
+
 // ------------------------------------------------------------------ extractors
 // A minimal, uncompressed PDF. Enough to prove the object scan, content-stream
 // tokenizer and line reconstruction work without shipping a real document.
-function buildPdf(lines) {
-  const ops = lines
-    .map((line, i) => `BT /F1 12 Tf 72 ${720 - i * 16} Td (${line.replace(/[()\\]/g, '\\$&')}) Tj ET`)
-    .join('\n');
+function buildPdfOps(ops) {
   const objs = [
     '<< /Type /Catalog /Pages 2 0 R >>',
     '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
@@ -339,6 +378,13 @@ function buildPdf(lines) {
   return new TextEncoder().encode(body);
 }
 
+function buildPdf(lines) {
+  const ops = lines
+    .map((line, i) => `BT /F1 12 Tf 72 ${720 - i * 16} Td (${line.replace(/[()\\]/g, '\\$&')}) Tj ET`)
+    .join('\n');
+  return buildPdfOps(ops);
+}
+
 test('the pdf extractor pulls text out of an uncompressed content stream', async () => {
   const bytes = buildPdf(['JANE Q. SAMPLE', 'Staff Engineer', 'Sample Corp']);
   const out = await extractPdfText(bytes);
@@ -348,6 +394,19 @@ test('the pdf extractor pulls text out of an uncompressed content stream', async
   assert.match(out.text, /Staff Engineer/);
   // Vertical order must survive: the name is above the job.
   assert.ok(out.text.indexOf('JANE') < out.text.indexOf('Staff'));
+});
+
+test('a font name glued to the TJ operator does not swallow the text', async () => {
+  // Real LaTeX output writes "...]TJ/F29 10 Tf" with no space before the slash.
+  // Treating "TJ/F29" as one token skipped the name and every employer line.
+  const ops = [
+    'BT /F1 12 Tf 72 720 Td [(JANE Q. SAMPLE)]TJ/F1 12 Tf 72 704 Td [(Staff Engineer)]TJ',
+    '/F1 12 Tf 72 688 Td [(Sample Corp)]TJ ET',
+  ].join('\n');
+  const out = await extractPdfText(buildPdfOps(ops));
+  assert.match(out.text, /JANE Q\. SAMPLE/);
+  assert.match(out.text, /Staff Engineer/);
+  assert.match(out.text, /Sample Corp/);
 });
 
 test('a pdf with no objects reports a reason instead of throwing', async () => {
@@ -482,6 +541,9 @@ test('the export panel offers every format and builds one on click', async () =>
 
     assert.equal(dom.get('#export-section').hidden, false, 'the export card is revealed for a resume');
     const html = dom.get('#export').innerHTML;
+    assert.match(html, /id="export-preview"/, 'the resume gets a print preview');
+    assert.match(html, /JANE Q\. SAMPLE/i, 'the preview shows the parsed name');
+    assert.match(html, /Print \/ Save PDF/, 'the preview can be printed without downloading a format');
     const { FORMATS } = await import('../docs/lib/resume-export.js');
     for (const spec of FORMATS) {
       assert.match(html, new RegExp(`data-format="${spec.id}"`), `no button for ${spec.id}`);

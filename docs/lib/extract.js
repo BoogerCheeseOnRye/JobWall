@@ -16,6 +16,7 @@ const MAX_TEXT = 60_000; // README prose only gets so much attention
 // channels the channels multiply out independently.
 export const CHANNELS = {
   language: { ceiling: 1.0, name: 'bytes committed' },
+  resume: { ceiling: 0.9, name: 'résumé text' },
   manifest: { ceiling: 0.8, name: 'declared dependency' },
   path: { ceiling: 0.75, name: 'file you wrote' },
   prose: { ceiling: 0.6, name: 'your own description' },
@@ -81,8 +82,9 @@ class Evidence {
 
 const round = (n) => Math.round(n * 1000) / 1000;
 
-export function languagesInto(ev, languages, prefix = 'language') {
+export function languagesInto(ev, languages, prefix = 'language', channel = 'language') {
   const total = Object.values(languages || {}).reduce((a, b) => a + b, 0) || 1;
+  const unit = channel === 'resume' ? 'mentions' : 'bytes';
   for (const [lang, bytes] of Object.entries(languages || {})) {
     const share = bytes / total;
     const ids = LANGUAGE_MAP[lang] || [lang.toLowerCase().replace(/[^a-z+#]/g, '')];
@@ -90,7 +92,7 @@ export function languagesInto(ev, languages, prefix = 'language') {
     // think in it.
     const strength = 0.3 + 0.7 * share;
     for (const id of ids) {
-      ev.add(id, strength, `${prefix}: ${lang} (${Math.round(share * 100)}% of bytes)`, 'language');
+      ev.add(id, strength, `${prefix}: ${lang} (${Math.round(share * 100)}% of ${unit})`, channel);
     }
   }
 }
@@ -145,9 +147,10 @@ export function pathsInto(ev, paths, strengthScale = 1) {
   }
 }
 
-export function detect({ languages, deps, readme, descriptions, topics, paths }) {
+export function detect({ languages, deps, readme, descriptions, topics, paths, fromResume = false }) {
   const ev = new Evidence();
-  languagesInto(ev, languages);
+  if (fromResume) languagesInto(ev, languages, 'resume', 'resume');
+  else languagesInto(ev, languages);
   depsInto(ev, deps);
   if (topics?.length) textInto(ev, topics.map((t) => t.replace(/-/g, ' ')).join(' '), 'topic', 1.15);
   if (descriptions?.length) textInto(ev, descriptions.join('\n'), 'project description', 0.85);

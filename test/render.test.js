@@ -24,6 +24,10 @@ const FIXTURE_REPO = {
   pushedAt: '2026-10-01T16:54:28Z',
   openIssues: 2,
   defaultBranch: 'main',
+  commits: 321,
+  lastCommit: '2026-10-01T16:54:28Z',
+  lastCommitMessage: 'Wire the mesh handshake',
+  lastCommitSha: 'def5678',
   languages: { JavaScript: 8_203_198, HTML: 656_668, Shell: 43_675, Python: 2_982 },
   deps: { three: 'vendored' },
   files: ['package.json'],
@@ -64,6 +68,15 @@ test('the page renders real results from a real submission', async () => {
   assert.ok(dom.get('#results').hidden === false, 'results section is revealed');
   assert.match(status, /Done in/, 'status reports completion');
   assert.match(ev, /SecMesh/, 'names the repo that was read');
+  assert.match(ev, /Project registry/, 'a single repo still reaches the project registry');
+  assert.match(ev, /created<\/b>2026-09-16/, 'the repo card shows its creation date');
+  assert.match(ev, /commits<\/b>321/, 'the repo card shows its commit count');
+  assert.match(ev, /def5678/, 'the repo card shows the last commit sha');
+  assert.match(ev, /Wire the mesh handshake/, 'the repo card shows the last commit message');
+  const draft = dom.get('#export').innerHTML;
+  assert.match(draft, /Working draft \/\/ public evidence/, 'a repo exports as a draft too');
+  assert.match(draft, /Public repositories/, 'and the repo is in that draft');
+  assert.match(draft, /class="export-btn"/, 'every format is available for the draft');
   assert.match(ev, /JavaScript/, 'shows the language evidence');
   assert.match(roles, /Engineer/, 'names at least one role');
   assert.match(roles, /live opening/, 'shows live opening counts per role');
@@ -163,7 +176,7 @@ const FIXTURE_PROFILE = {
   readme: 'A neon roguelike FPS in a single HTML file. WebGL, voxels, WebSockets.',
   repos: [
     { name: 'voidscream', url: 'u', description: '', language: 'HTML', sizeKb: 43825, pushedAt: '2026-07-20T00:00:00Z', sampled: true },
-    { name: 'SecMesh', url: 'u', description: 'mesh', language: 'JavaScript', sizeKb: 17031, pushedAt: '2026-10-01T00:00:00Z', sampled: true },
+    { name: 'SecMesh', url: 'u', description: 'mesh', language: 'JavaScript', sizeKb: 17031, pushedAt: '2026-10-01T00:00:00Z', createdAt: '2024-01-02T00:00:00Z', commits: 1204, topics: ['mesh', 'security'], license: 'MIT', lastCommit: '2026-10-01T12:00:00Z', lastCommitMessage: 'Tighten the mesh handshake', lastCommitSha: 'abc1234', sampled: true },
     { name: 'THE.END.OF.AAA.GAMING', url: 'https://github.com/fixture/THE.END.OF.AAA.GAMING', description: 'Is what is is brosky', language: 'HTML', sizeKb: 7958, pushedAt: '2026-06-11T00:00:00Z', sampled: true },
     { name: 'SwarmRam', url: 'u', description: '', language: 'Python', sizeKb: 8, pushedAt: '2026-05-31T00:00:00Z', sampled: false },
     { name: 'resume', url: 'u', description: '', language: 'HTML', sizeKb: 0, pushedAt: '2026-03-16T00:00:00Z', sampled: false },
@@ -198,6 +211,31 @@ test('every project appears on the profile, ordered by substance', async () => {
     /3 of 17 repos read/.test(dom.get('#evidence-time')._text),
     `the header states the coverage, got: ${dom.get('#evidence-time')._text}`
   );
+});
+
+test('project cards carry the metadata the source returned', async () => {
+  const dom = makeDom();
+  const payload = await score({ kind: 'profile', owner: 'fixture' }, FIXTURE_PROFILE);
+  payload.tookMs = 2000;
+
+  globalThis.document = dom.document;
+  globalThis.fetch = async (url) =>
+    stubResponse(url === '/api/analyze' ? payload : { ok: true, feeds: payload.sources });
+
+  await mount();
+  await new Promise((r) => setTimeout(r, 25));
+  assert.equal(isBrowserMode(), false, 'server mode must settle before submit');
+  dom.get('#url').value = 'fixture';
+  dom.get('#form').fire('submit', { preventDefault() {} });
+  await new Promise((r) => setTimeout(r, 50));
+
+  const html = dom.get('#evidence')._html;
+  assert.match(html, /created<\/b>2024-01-02/, 'the card shows when the repo was created');
+  assert.match(html, /commits<\/b>1,204/, 'the card shows the commit count');
+  assert.match(html, /license<\/b>MIT/, 'the card shows the declared license');
+  assert.match(html, /topics[\s\S]*?mesh|mesh[\s\S]*?security/, 'topics are listed');
+  assert.match(html, /abc1234/, 'the last commit sha is shown');
+  assert.match(html, /Tighten the mesh handshake/, 'the last commit message is shown');
 });
 
 test('the evidence card leads with the finding, not a data dump', async () => {

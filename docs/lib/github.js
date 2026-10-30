@@ -63,6 +63,36 @@ async function api(path, { raw = false } = {}) {
   return value;
 }
 
+// One extra request per deep-read repo buys the last commit and the commit
+// count (GitHub paginates with per_page=1, so the last page is the count). It is
+// deliberately best-effort: a rate-limited profile still renders everything
+// the repo list already told us.
+async function commitStats(owner, repo) {
+  const url = `${API}/repos/${owner}/${repo}/commits?per_page=1`;
+  const key = `commits:${owner}/${repo}`;
+  const hit = cache.get(key);
+  if (hit && Date.now() - hit.at < TTL_MS) return hit.value;
+  try {
+    const res = await fetch(url, { headers: headers(), signal: AbortSignal.timeout(12_000) });
+    if (!res.ok) return null;
+    const rows = await res.json();
+    const link = res.headers.get('link') || '';
+    const lastPage = /[?&]page=(\d+)>;\s*rel="last"/.exec(link);
+    const last = Array.isArray(rows) ? rows[0] : null;
+    const value = {
+      count: lastPage ? Number(lastPage[1]) : Array.isArray(rows) ? rows.length : null,
+      date: last?.commit?.author?.date || last?.commit?.committer?.date || null,
+      message: last?.commit?.message?.split('\n')[0] || null,
+      sha: last?.sha ? last.sha.slice(0, 7) : null,
+    };
+    cache.set(key, { at: Date.now(), value });
+    return value;
+  } catch {
+    return null;
+  }
+}
+
+
 // Accepts: full URL, github.com/user/repo(.git), user/repo, bare username.
 export function parseTarget(input) {
   let s = String(input || '').trim();
@@ -185,6 +215,7 @@ export async function analyzeRepo(owner, repo) {
     readme(owner, repo),
     manifest(owner, repo, paths),
   ]);
+  const commits = await commitStats(owner, repo);
 
   return {
     kind: 'repo',
@@ -200,9 +231,16 @@ export async function analyzeRepo(owner, repo) {
     sizeKb: meta.size,
     license: meta.license?.spdx_id || null,
     createdAt: meta.created_at,
+    updatedAt: meta.updated_at,
     pushedAt: meta.pushed_at,
     openIssues: meta.open_issues_count,
     defaultBranch: meta.default_branch,
+    fork: Boolean(meta.fork),
+    archived: Boolean(meta.archived),
+    commits: commits?.count ?? null,
+    lastCommit: commits?.date || null,
+    lastCommitMessage: commits?.message || null,
+    lastCommitSha: commits?.sha || null,
     languages,
     deps: { ...vendoredDeps(paths), ...manifestInfo.deps },
     files: manifestInfo.files || [],
@@ -263,6 +301,15 @@ export async function analyzeProfile(owner) {
     fileHits.push(...(mf.files || []));
   }
 
+  // The repo list carries dates, topics and counts; the commit call adds what
+  // only the commits endpoint knows. Failures are omitted, not filled in.
+  const commitInfo = new Map();
+  await Promise.all(
+    ranked.map(async (r) => {
+      commitInfo.set(r.name, await commitStats(owner, r.name));
+    })
+  );
+
   return {
     kind: 'profile',
     owner,
@@ -301,9 +348,22 @@ export async function analyzeProfile(owner) {
         language: r.language,
         stars: r.stargazers_count,
         forks: r.forks_count,
+        watchers: r.watchers_count,
         pushedAt: r.pushed_at,
+        createdAt: r.created_at,
+        updatedAt: r.updated_at,
         topics: r.topics || [],
         sizeKb: r.size,
+        openIssues: r.open_issues_count,
+        license: r.license?.spdx_id || null,
+        homepage: r.homepage || null,
+        defaultBranch: r.default_branch || null,
+        fork: Boolean(r.fork),
+        archived: Boolean(r.archived),
+        commits: commitInfo.get(r.name)?.count ?? null,
+        lastCommit: commitInfo.get(r.name)?.date || null,
+        lastCommitMessage: commitInfo.get(r.name)?.message || null,
+        lastCommitSha: commitInfo.get(r.name)?.sha || null,
         sampled: ranked.some((x) => x.name === r.name),
       })),
     readme: readmeText,

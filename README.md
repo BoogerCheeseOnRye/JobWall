@@ -47,11 +47,15 @@ If you need this to hold up under traffic, put a real backend behind the same
 `lib/` — a Cloudflare Worker is a ~40-line adapter, because none of the engine
 touches node builtins.
 
+Commit counts and the last commit cost one extra request per deep-read repo.
+When that request is refused, the field is omitted; the card never invents a
+count from the repo size.
+
 ## What it accepts
 
 - `https://github.com/owner/repo` — one project
 - `owner/repo`, `owner`, or `github.com/owner`
-- a profile reads your top projects' READMEs and manifests too, not just metadata
+- a profile reads your top projects' READMEs, manifests, and commit metadata too, not just repo titles
 
 ## The résumé path
 
@@ -101,6 +105,17 @@ The writers are checked against the readers, not just against their own
 expectations: the test suite extracts the text back out of the generated PDF and
 DOCX and compares it, so a writer cannot drift from the parser it feeds.
 
+A GitHub profile opens the same Export tab as a **working draft résumé**: a
+summary generated from the repositories, target roles and skills labelled as
+inferred, and the public repositories with their dates, stars, forks, commit
+counts and last commit. Experience and education stay out until a document
+provides them, and all ten formats download the same draft.
+
+The Export tab also shows the sheet itself, laid out as the printed page. **Print
+/ Save PDF** sends that sheet to the browser's print dialog with the cockpit
+removed, so the paper is the only thing on the page — one sheet for a short
+document, and clean breaks for a two-page one.
+
 ### Offline
 
 ```bash
@@ -124,6 +139,22 @@ Progress, warnings and file paths go to **stderr**, so `--out -` gives you a
 clean document to pipe. Binary formats (`pdf`, `docx`) are refused there —
 point `--out` at a directory for those. `--open` hands the finished files to the
 desktop; it only ever opens what it just wrote.
+
+### Research note
+
+`docs/research.html` follows four public résumés (two PDF, two DOCX) through the
+same parser and scorer. It is generated from real snapshots, not written by
+hand, and embeds the extracted text, parsed model and export output so every
+claim can be checked in one file.
+
+```bash
+# put the four samples in research/samples/ (names are listed in collect.mjs)
+node research/collect.mjs
+node research/build-paper.mjs
+```
+
+The samples and snapshots are gitignored: this repository is public and real
+résumés should stay local. The generated paper is standalone.
 
 ## How the matching works
 

@@ -5,3 +5,9 @@ node_modules/
 .env.*
 *.tmp
 .git/
+
+# Public resume samples and their analysis snapshots stay local: the repo is
+# public, and real resumes should never enter it. docs/research.html embeds
+# everything it needs; regenerate the snapshots with research/collect.mjs.
+research/samples/
+research/data/

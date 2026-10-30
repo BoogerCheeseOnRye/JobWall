@@ -36,6 +36,36 @@ function summarize(profile, target) {
         .slice(0, 60),
       readmeChars: profile.readme.length,
       links: [profile.url, `${profile.url}/blob/${profile.defaultBranch}/README.md`],
+      repoTotal: 1,
+      publicRepos: 1,
+      sampledRepos: [profile.repo],
+      // One repo is still a project. The dossier registry and the draft export
+      // read the same field as a profile, so the card has the same metadata.
+      repos: [{
+        name: profile.repo,
+        url: profile.url,
+        description: profile.description || '',
+        language: Object.keys(profile.languages || {})[0] || null,
+        stars: profile.stars || 0,
+        forks: profile.forks || 0,
+        watchers: profile.watchers || 0,
+        pushedAt: profile.pushedAt || null,
+        createdAt: profile.createdAt || null,
+        updatedAt: profile.updatedAt || null,
+        topics: profile.topics || [],
+        sizeKb: profile.sizeKb || 0,
+        openIssues: profile.openIssues ?? null,
+        license: profile.license || null,
+        homepage: profile.homepage || null,
+        defaultBranch: profile.defaultBranch || null,
+        fork: Boolean(profile.fork),
+        archived: Boolean(profile.archived),
+        commits: profile.commits ?? null,
+        lastCommit: profile.lastCommit || null,
+        lastCommitMessage: profile.lastCommitMessage || null,
+        lastCommitSha: profile.lastCommitSha || null,
+        sampled: true,
+      }],
     };
   }
   return {
@@ -105,9 +135,22 @@ export function mergeRaws(raws) {
           language: Object.keys(r.languages || {})[0] || null,
           stars: r.stars || 0,
           forks: r.forks || 0,
+          watchers: r.watchers || 0,
           pushedAt: r.pushedAt || null,
+          createdAt: r.createdAt || null,
+          updatedAt: r.updatedAt || null,
           topics: r.topics || [],
           sizeKb: r.sizeKb || 0,
+          openIssues: r.openIssues ?? null,
+          license: r.license || null,
+          homepage: r.homepage || null,
+          defaultBranch: r.defaultBranch || null,
+          fork: Boolean(r.fork),
+          archived: Boolean(r.archived),
+          commits: r.commits ?? null,
+          lastCommit: r.lastCommit || null,
+          lastCommitMessage: r.lastCommitMessage || null,
+          lastCommitSha: r.lastCommitSha || null,
           sampled: true,
         }]
       : r.repos || []
@@ -192,6 +235,7 @@ export async function score(target, raw) {
     descriptions: target.kind === 'repo' ? [raw.description] : raw.repos.map((r) => `${r.name} ${r.description}`),
     topics: raw.topics,
     paths: raw.paths,
+    fromResume: Boolean(raw.fromResume),
   });
 
   const skills = ev.top(26);

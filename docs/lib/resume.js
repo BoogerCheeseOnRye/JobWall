@@ -54,7 +54,9 @@ const PHONE = /(?:\+?1[\s.-]?)?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}\b/;
 // "City, ST" or "City, State", delimited by a bullet/pipe or the end of the
 // line so it cannot eat into the next field.
 const LOCATION = /(?:^|[\s,•|;])\s*([A-Z][A-Za-z.'-]+(?:\s+[A-Z][A-Za-z.'-]+)?,\s*(?:[A-Z]{2}\b|[A-Z][a-z]+))(?=\s*(?:[•|,;]|$))/;
-const URLISH = /\b((?:https?:\/\/)?(?:www\.)?(?:github\.com|linkedin\.com|x\.com|twitter\.com|[a-z0-9-]+\.(?:com|dev|io|me|net|org|xyz|page|site|so|sh))\/\S+|[a-z0-9-]+\.(?:dev|io|me|page|site|xyz|so|sh)\b)/gi;
+// Subdomains are part of the address: `jane.sample.dev` is a website, not
+// `sample.dev`. The lookbehind stops the match from starting inside an email.
+const URLISH = /(?<![@\w.])((?:https?:\/\/)?(?:www\.)?(?:[a-z0-9-]+\.)+(?:com|dev|io|me|net|org|xyz|page|site|so|sh)(?:\/\S*)?)/gi;
 
 const MONTHS = 'jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec';
 const DATE_RANGE = new RegExp(
@@ -114,15 +116,26 @@ function splitItems(text) {
 }
 
 function sectionKeyFor(line, style) {
-  const text = line.trim();
+  const text = line.trim().replace(/\s+/g, ' ');
   if (!text || text.length > 46) return null;
+  // Resumes exported from Word, Google Docs and LaTeX rarely shout their
+  // headings: "Experience" is set in bold title case, not "EXPERIENCE". Word
+  // styles the heading (handled above), but PDF extraction has no styles, so a
+  // short title-case line that is exactly a section name is the signal we have.
+  // Requiring the whole line to be the heading keeps "Experience: 10 years"
+  // and bullet prose from opening a new section.
+  const heading = text.replace(/[:：]\s*$/, '').trim();
+  if (/[:：]/.test(text) && !/[:：]\s*$/.test(text)) return null;
+  if (/[•|]/.test(text) || /\d{4}/.test(text)) return null;
   if (style && /^heading/i.test(style)) {
-    const hit = SECTION_ALIASES.find((a) => a.re.test(text));
+    const hit = SECTION_ALIASES.find((a) => a.re.test(heading));
     return hit ? hit.key : null;
   }
   const shouty = text === text.toUpperCase() && /[A-Z]/.test(text) && text.length <= 46;
-  if (!shouty) return null;
-  return SECTION_ALIASES.find((a) => a.re.test(text))?.key || null;
+  const titleCase =
+    /^[A-Z][A-Za-z0-9&/,'’() .+-]*$/.test(heading) && heading.split(/\s+/).length <= 5;
+  if (!shouty && !titleCase) return null;
+  return SECTION_ALIASES.find((a) => a.re.test(heading))?.key || null;
 }
 
 // Splits the document into sections. Unlabelled trailing content is kept under
@@ -209,18 +222,23 @@ function parseContact(headerLines) {
       out.location = loc[1].replace(/\s+/g, ' ').trim();
       continue;
     }
-    const words = probe.split(/\s+/);
+    const named = probe
+      .replace(/\b(?:email|e-mail|phone|mobile|tel|location|address|website|portfolio|site|github|linkedin)\b\s*[:：]?/gi, ' ')
+      .replace(/[:：,;|]+$/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    const nameWords = named.split(/\s+/);
     const nameish =
-      words.length >= 2 &&
-      words.length <= 4 &&
-      words.every((w) => /^[A-Z][A-Za-z'’-]*[.,]?$/.test(w)) &&
-      !/•/.test(probe);
+      nameWords.length >= 2 &&
+      nameWords.length <= 4 &&
+      nameWords.every((w) => /^[A-Z][A-Za-z'’-]*[.,]?$/.test(w)) &&
+      !/•/.test(named);
     if (nameish && !out.name) {
-      out.name = tidyName(probe);
+      out.name = tidyName(named);
       continue;
     }
-    if (!out.name && words.length <= 6 && !/\d/.test(probe) && /^[A-Z]/.test(probe) && probe.length < 40 && !out.location) {
-      out.name = tidyName(probe);
+    if (!out.name && nameWords.length <= 6 && !/\d/.test(named) && /^[A-Z]/.test(named) && named.length < 40 && !out.location) {
+      out.name = tidyName(named);
     }
   }
   out.name = out.name ? tidyName(out.name) : null;
@@ -334,6 +352,31 @@ function isPlaceLike(text) {
 
 const KICKER = /^(earlier|additional|previous|prior|other|remaining)\b[^:]*:/i;
 
+// Layout engines often put the employer on a bulleted line above the job
+// title ("• Google   Mountain View, CA" / "Software Engineer   Oct 2016 -
+// Present"). Treat that line as the org/location seed for the dated title that
+// follows instead of as an achievement bullet.
+function splitOrgLocation(text) {
+  const m = /^(.*),\s*([A-Z]{2}|[A-Z][a-z]+)\s*$/.exec(String(text).trim());
+  if (!m) return null;
+  const words = m[1].trim().split(/\s+/);
+  if (words.length < 3) return null;
+  // A two-word city ("Mountain View") is the common case, but not when the
+  // first of those words is really the tail of the employer ("Lucena Research
+  // Atlanta") or the employer itself ends on a connector ("University of
+  // California Berkeley").
+  const ORG_TAIL = /^(research|institute|labs?|laboratory|university|college|school|technolog(?:y|ies)|systems?|solutions?|group|inc|llc|corp|company|studios?|media|foundation|center|centre|science|sciences)$/i;
+  const CONNECTOR = /(?:^|\s)(?:of|and|the|for|at|in|on|to|de|del|la|le|van|von)$/i;
+  let n = 2;
+  if (ORG_TAIL.test(words[words.length - 2]) || CONNECTOR.test(words.slice(0, -2).join(' '))) n = 1;
+  const orgWords = words.slice(0, -n);
+  const org = orgWords.join(' ');
+  if (!org) return null;
+  const connectorWord = /^(?:of|and|the|for|at|in|on|to|de|del|la|le|van|von)$/i;
+  if (!orgWords.every((w) => connectorWord.test(w) || /^[A-Z0-9][\w&.'’+-]*$/.test(w))) return null;
+  return { org, location: `${words.slice(-n).join(' ')}, ${m[2]}` };
+}
+
 function parseExperience(lines) {
   const entries = [];
   let current = null;
@@ -368,6 +411,10 @@ function parseExperience(lines) {
     const body = bullet ? bullet[1].trim() : line;
 
     if (bullet) {
+      // A bulleted employer line opens the next role, even when the previous
+      // role ran straight into it with no blank line between them.
+      const orgish = splitOrgLocation(body);
+      if (orgish && current && (current.title || current.org) && current.bullets.length) start();
       if (!current || closed) start();
       current.bullets.push(body);
       current.raw.push(line);
@@ -390,18 +437,30 @@ function parseExperience(lines) {
     const dateIdx = parts.findIndex((p) => p.includes(dates.raw || '\u0000'));
 
     if (dates.raw && dateIdx >= 0 && (dates.start || dates.end)) {
-      if (!current || closed || current.bullets.length || current.org) start();
+      const seed =
+        current && !current.title && !current.org && !current.start && current.bullets.length === 1
+          ? splitOrgLocation(current.bullets[0])
+          : null;
+      if (seed) current.bullets = [];
+      else if (!current || closed || current.bullets.length || current.org) start();
+      if (seed) {
+        current.org = seed.org;
+        current.location = seed.location;
+      }
 
       // "2025-Present - In-person tutoring on local LLMs" carries the first
       // achievement of the job on the same line as the dates.
       const datePart = parts[dateIdx];
+      const dateAt = datePart.indexOf(dates.raw);
+      const prefix = dateAt > 0 ? datePart.slice(0, dateAt).replace(/[\s\-–—:|,]+$/, '').trim() : '';
       const tail = datePart
-        .slice(datePart.indexOf(dates.raw) + dates.raw.length)
+        .slice(dateAt + dates.raw.length)
         .replace(/^[\s\-–—:|,]+/, '')
         .trim();
       if (tail.length > 25) current.bullets.push(tail);
 
       const head = parts.slice(0, dateIdx).filter(Boolean);
+      if (prefix) head.push(prefix);
       let place = null;
       if (head.length >= 2 && isPlaceLike(head.at(-1))) place = head.pop();
       else if (head.length === 1 && isPlaceLike(head[0]) && !current.org) place = head.shift();
@@ -574,6 +633,16 @@ function parseProjects(lines) {
     }
 
     if (bullet) {
+      // "• QuantSoftware Toolkit : Open source Python library..." is one
+      // project in a single bullet. Keeping the bullet intact loses the name,
+      // so the label before the colon becomes the project and the rest its
+      // description.
+      const labelledBullet = /^([A-Z][^:：]{1,60}?)\s*[:：]\s+(.+)$/.exec(body);
+      if (labelledBullet && !/[.!?]$/.test(labelledBullet[1]) && !PROJECT_URL.test(labelledBullet[1])) {
+        start({ name: labelledBullet[1].trim(), description: labelledBullet[2].trim() });
+        current.raw.push(line);
+        continue;
+      }
       if (!current || closed) start();
       current.bullets.push(body);
       current.raw.push(line);
@@ -712,6 +781,24 @@ function parseEducation(lines) {
     }
     const dates = parseDates(body);
     if (dates.raw && !bullet) {
+      if (
+        open &&
+        open.type === 'education' &&
+        !open.start &&
+        !open.end &&
+        !open.detail &&
+        open.bullets?.length === 1
+      ) {
+        const place = splitOrgLocation(open.bullets[0]);
+        open.school = place?.org || open.bullets[0];
+        if (place?.location) open.location = place.location;
+        open.bullets = [];
+        open.detail = body;
+        open.start = dates.start;
+        open.end = dates.end;
+        open.raw += ` ${line}`;
+        return;
+      }
       if (open && open.type === 'education' && !open.start && !open.end && open.detail) {
         const school = body
           .replace(dates.raw, '')

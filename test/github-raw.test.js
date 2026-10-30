@@ -12,19 +12,32 @@ const GH = 'https://api.github.com/repos/expressjs/express/contents/package.json
 
 async function rawBody(accept) {
   const res = await fetch(GH, { headers: { Accept: accept } });
-  return res.text();
+  return { ok: res.ok, status: res.status, body: await res.text() };
 }
 
-test('the contents endpoint only returns file text when the raw media type is asked for', async () => {
+test('the contents endpoint only returns file text when the raw media type is asked for', async (t) => {
   const json = await rawBody('application/vnd.github+json');
   const raw = await rawBody('application/vnd.github.raw');
 
-  const envelope = JSON.parse(json);
+  // This is a live integration check against GitHub, not a unit test: when the
+  // anonymous 60/hour quota is gone there is no response to assert on. Skip
+  // loudly rather than failing for a reason that has nothing to do with the
+  // media-type bug this test pins.
+  if (!json.ok || !raw.ok) {
+    const message =
+      json.status === 403 || raw.status === 403
+        ? 'GitHub anonymous rate limit reached; the live contents check could not run'
+        : `GitHub contents endpoint answered ${json.status}/${raw.status}`;
+    t.skip(message);
+    return;
+  }
+
+  const envelope = JSON.parse(json.body);
   assert.equal(envelope.name, 'package.json', 'the envelope names the file, not the package');
   assert.ok('content' in envelope, 'the envelope wraps the file in base64 `content`');
   assert.ok(!('dependencies' in envelope), 'and it carries none of the manifest — the silent failure');
 
-  const pkg = JSON.parse(raw);
+  const pkg = JSON.parse(raw.body);
   assert.ok(pkg.name, 'the raw response is the file itself');
   assert.ok('dependencies' in pkg, 'and it actually carries dependencies');
 });
@@ -51,8 +64,10 @@ test('the deep-read cap leaves the small repos to metadata rather than dropping 
   assert.ok(text.includes('descriptions.push'), 'repo descriptions are collected for every repo');
   assert.ok(text.includes('paths.push(r.name)'), 'repo names reach the path channel for every repo');
 
-  // And the cap must not be the old, quietly-small one.
-  const cap = text.match(/slice\(0,\s*(\d+)\)/);
+  // And the cap must not be the old, quietly-small one. Match the cap on the
+  // ranked list specifically: a plain `slice(0, n)` now also finds the
+  // seven-character commit sha.
+  const cap = text.match(/\.slice\(0,\s*(\d+)\);\s*\n\s*const deps/);
   assert.ok(cap && Number(cap[1]) >= 10, `deep-read cap should be at least 10, found ${cap && cap[1]}`);
   assert.ok(typeof gh.parseTarget === 'function');
 });

@@ -37,7 +37,7 @@ function scanObjects(bytes) {
   while ((m = re.exec(src))) {
     const num = Number(m[1]);
     const start = m.index + m[0].length;
-    const end = src.indexOf('endobj', start);
+    let end = src.indexOf('endobj', start);
     if (end < 0) continue;
     const body = src.slice(start, end);
     const si = body.indexOf('stream');
@@ -52,10 +52,57 @@ function scanObjects(bytes) {
       // up trailing whitespace and corrupts the inflate.
       const lm = /\/Length\s+(\d+)/.exec(dict);
       length = lm ? Number(lm[1]) : -1;
+      // Compressed bytes routinely contain the literal text "N 0 obj". Scanning
+      // through them invents objects and can shadow the real page dictionary.
+      // Resume after this stream instead of trusting the first "endobj".
+      const streamTail = src.indexOf('endstream', streamStart);
+      if (streamTail >= 0) {
+        end = src.indexOf('endobj', streamTail);
+        if (end < 0) end = streamTail + 9;
+      }
     }
     objects.set(num, { num, dict, streamStart, length, src, bytes });
+    // Skip the body: only the top level contains object headers.
+    re.lastIndex = end + 6;
   }
   return objects;
+}
+
+// PDF 1.5+ packs small objects (page trees, font dictionaries, annotations)
+// into a compressed /ObjStm stream instead of writing "N G obj" bodies. The
+// scanner above only sees the outer streams, so without this step a perfectly
+// valid LaTeX or Word export has *zero* pages and looks like a scan. Embedded
+// objects carry no stream of their own, which is fine: PDF forbids streams
+// inside an object stream, so every page's /Contents still lives at top level.
+async function expandObjectStreams(objects, bytes) {
+  for (const object of [...objects.values()]) {
+    if (!/\/Type\s*\/ObjStm\b/.test(object.dict)) continue;
+    const raw = streamBytes(objects, object);
+    if (!raw || !raw.length) continue;
+    const inflated = /\/FlateDecode/.test(object.dict) ? await inflate(raw) : raw;
+    if (!inflated) continue;
+    const text = decoder.decode(inflated);
+    const count = Number(/\/N\s+(\d+)/.exec(object.dict)?.[1] || 0);
+    const first = Number(/\/First\s+(\d+)/.exec(object.dict)?.[1] || 0);
+    if (!count || first > text.length) continue;
+    const header = text.slice(0, first).trim().split(/\s+/).map(Number);
+    for (let i = 0; i < count; i++) {
+      const num = header[i * 2];
+      const offset = header[i * 2 + 1];
+      if (!Number.isFinite(num) || !Number.isFinite(offset)) break;
+      const start = first + offset;
+      const nextOffset = i + 1 < count ? header[(i + 1) * 2 + 1] : null;
+      const end = nextOffset == null ? text.length : first + nextOffset;
+      if (start < 0 || start >= text.length) continue;
+      const body = text.slice(start, Math.min(end, text.length)).trim();
+      if (!body) continue;
+      // Never overwrite a top-level object: an ObjStm copy is the same object
+      // and the uncompressed one may include a stream this one cannot have.
+      if (!objects.has(num)) {
+        objects.set(num, { num, dict: body, streamStart: -1, length: -1, src: object.src, bytes });
+      }
+    }
+  }
 }
 
 function streamBytes(objects, object) {
@@ -67,6 +114,18 @@ function streamBytes(objects, object) {
   const tail = src.indexOf('endstream', object.streamStart);
   if (tail < 0) return null;
   return bytes.subarray(object.streamStart, tail);
+}
+
+// /Length is often an indirect reference ("/Length 34 0 R"), and the trailing
+// newline before "endstream" is enough to make DecompressionStream reject the
+// whole stream as junk. Read the indirect number when we can.
+function streamLength(objects, dict) {
+  const m = /\/Length\s+(\d+)(?:\s+(\d+)\s+R)?/.exec(dict);
+  if (!m) return -1;
+  if (!m[2]) return Number(m[1]);
+  const target = objects.get(Number(m[1]));
+  const value = target && /^\s*(\d+)\s*$/.exec(target.dict)?.[1];
+  return value ? Number(value) : -1;
 }
 
 async function objectStreamText(objects, object) {
@@ -232,15 +291,15 @@ function tokenize(content) {
       continue;
     }
     if (ch === '/' || ch === '+' || ch === '-' || ch === '.' || /[0-9]/.test(ch)) {
-      let j = i;
-      while (j < n && !/[\s()[\]<>]/.test(content[j])) j++;
+      let j = ch === '/' ? i + 1 : i;
+      while (j < n && !/[\s()[\]<>/]/.test(content[j])) j++;
       const word = content.slice(i, j);
       tokens.push({ type: /^[+-.\d]/.test(word) ? 'number' : 'name', value: word.replace(/^\//, '') });
       i = j;
       continue;
     }
     let j = i;
-    while (j < n && /[^\s()[\]<>]/.test(content[j])) j++;
+    while (j < n && /[^\s()[\]<>/]/.test(content[j])) j++;
     if (j === i) {
       // '<<', '>>' and stray '<'/'>' land here. Always advance, or the loop
       // spins forever and the token array eats the heap.
@@ -395,10 +454,79 @@ function runsToLines(runs) {
 
 const estimateWidth = (s) => (s.length * 0.5);
 
+// Two-column resumes put unrelated sections side by side. Reading runs in
+// visual line order interleaves them ("EDUCATION EXPERIENCE"), so detect a
+// genuine second column and read each column top-to-bottom before joining.
+// Right-aligned dates on a one-column resume are not a column: the right side
+// must carry a meaningful share of the page's text and several distinct lines.
+const HEADING_WORD = /^(education|experience|skills|projects|links|coursework|awards|publications|research|activities|summary|profile|objective|certifications?|honors?|languages?|interests?|volunteer(?:ing)?|employment|work(?:\s+experience)?|technical(?:\s+skills)?|selected\s+projects|additional\s+information|leadership|affiliations?)$/i;
+
+function splitColumns(runs) {
+  const chars = (list) => list.reduce((n, r) => n + r.text.trim().length, 0);
+  const textRuns = runs.filter((r) => r.text.trim());
+  const xs = textRuns.map((r) => r.x);
+  if (xs.length < 20) return null;
+  const min = Math.min(...xs);
+  const max = Math.max(...xs);
+  if (max - min < 180) return null;
+
+  // Only trust a split when two section headings share a baseline, one in each
+  // column. A one-column resume also has right-aligned dates, and treating
+  // those as a column shreds every bullet line.
+  const byLine = new Map();
+  for (const run of textRuns) {
+    if (!HEADING_WORD.test(run.text.trim())) continue;
+    const key = Math.round(run.y / 3);
+    if (!byLine.has(key)) byLine.set(key, []);
+    byLine.get(key).push(run);
+  }
+  let headingY = null;
+  let headingXs = [];
+  for (const group of byLine.values()) {
+    const xs = group.map((r) => r.x);
+    if (group.length >= 2 && Math.max(...xs) - Math.min(...xs) > 80) {
+      headingY = Math.max(...group.map((r) => r.y));
+      headingXs = xs;
+    }
+  }
+  if (headingY == null) return null;
+
+  const header = textRuns.filter((r) => r.y > headingY + 1);
+  const body = textRuns.filter((r) => r.y <= headingY + 1);
+  const bodyXs = [...new Set(body.map((r) => r.x))].sort((a, b) => a - b);
+  let best = null;
+  for (let i = 0; i + 1 < bodyXs.length; i++) {
+    const gap = bodyXs[i + 1] - bodyXs[i];
+    if (gap < 12 || (best && gap <= best.gap)) continue;
+    const cut = (bodyXs[i] + bodyXs[i + 1]) / 2;
+    const left = body.filter((r) => r.x < cut);
+    const right = body.filter((r) => r.x >= cut);
+    const leftChars = chars(left);
+    const rightChars = chars(right);
+    if (leftChars < 200 || rightChars < 200) continue;
+    if (rightChars / (leftChars + rightChars) < 0.22) continue;
+    if (new Set(right.map((r) => Math.round(r.y))).size < 6) continue;
+    if (Math.min(...headingXs) >= cut || Math.max(...headingXs) < cut) continue;
+    best = { gap, cut };
+  }
+  if (!best) return null;
+  return {
+    header,
+    left: body.filter((r) => r.x < best.cut),
+    right: body.filter((r) => r.x >= best.cut),
+  };
+}
+
 export async function extractPdfText(input) {
   const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
   const objects = scanObjects(bytes);
   if (!objects.size) return { text: '', pages: 0, hasText: false, reason: 'no readable objects' };
+  // The object table is complete now, so indirect /Length references can be
+  // resolved before any stream is inflated.
+  for (const object of objects.values()) {
+    if (object.streamStart >= 0) object.length = streamLength(objects, object.dict);
+  }
+  await expandObjectStreams(objects, bytes);
   // The trailer names /Encrypt when the document is password protected. Its
   // streams decrypt into noise, so bail out rather than emit garbage text.
   const tail = decoder.decode(bytes.subarray(Math.max(0, bytes.length - 4096)));
@@ -454,15 +582,31 @@ export async function extractPdfText(input) {
     }
     const lookup = (name) => resolved.get(name) || null;
 
-    const contentsRef = page.dict.match(/\/Contents\s+(\d+)\s+\d+\s+R/);
-    let contentObj = contentsRef ? objects.get(Number(contentsRef[1])) : null;
-    if (!contentObj) continue;
-    const text = await objectStreamText(objects, contentObj);
+    const contentsRef = /\/Contents\s*(\[[^\]]*\]|\d+\s+\d+\s+R)/.exec(page.dict);
+    if (!contentsRef) continue;
+    const contentRefs = [...contentsRef[1].matchAll(/(\d+)\s+\d+\s+R/g)].map((m) => Number(m[1]));
+    const contents = [];
+    for (const ref of contentRefs) {
+      const contentObj = objects.get(ref);
+      if (!contentObj) continue;
+      const text = await objectStreamText(objects, contentObj);
+      if (text) contents.push(text);
+    }
+    const text = contents.join('\n');
     if (!text) continue;
     // Blank lines survive on purpose: the vertical gaps between sections are
     // the only reliable boundary a resume has, and dropping them costs the
     // parser its section detection.
-    pagesOut.push(runsToLines(renderContent(text, lookup)));
+    const pageRuns = renderContent(text, lookup);
+    const columns = splitColumns(pageRuns);
+    const lines = columns
+      ? [
+          ...runsToLines(columns.header),
+          ...runsToLines(columns.left),
+          ...runsToLines(columns.right),
+        ]
+      : runsToLines(pageRuns);
+    pagesOut.push(lines.filter(Boolean));
   }
 
   const pageCount = pageList.length || pagesOut.length;

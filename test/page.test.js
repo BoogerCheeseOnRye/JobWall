@@ -104,10 +104,11 @@ test('the two entry paths are both real forms with their own submit button', asy
   }
 });
 
-test('the export card exists and is hidden until there is a resume', async () => {
+test('the export card exists and starts hidden until there is a subject', async () => {
   const html = await read('index.html');
   assert.match(html, /<section class="card" id="export-section" hidden>/);
   assert.match(html, /id="export"/);
+  assert.match(html, /id="export-empty"[^>]*>Load a profile[\s\S]*?working draft résumé/, 'the empty state says the preview prints');
 });
 
 test('the page says what it does without a recruiter in the copy', async () => {
@@ -119,4 +120,23 @@ test('the page says what it does without a recruiter in the copy', async () => {
   assert.match(html, /id="resume-hint"/);
   // Nothing should claim the file is uploaded when it is not.
   assert.match(html, /never uploaded|Never uploaded/, 'the privacy claim is on the page');
+});
+
+test('the print stylesheet prints the sheet alone, with no blank page', async () => {
+  const css = await read('style.css');
+  const block = /@media print \{([\s\S]*?)\n\}/.exec(css);
+  assert.ok(block, 'the print rules exist');
+  const print = block[1];
+
+  // Hiding the cockpit with visibility alone leaves its height in the layout,
+  // which pushed a blank second page after the sheet. Everything that is not
+  // the preview, its descendants, or its ancestors must leave the flow.
+  assert.match(print, /body \*:not\(#export-preview\):not\(#export-preview \*\):not\(:has\(#export-preview\)\)\s*\{[\s\S]*?display:\s*none !important/);
+  assert.ok(!/body \* \{ visibility: hidden !important; \}/.test(print), 'no blanket visibility hide');
+  assert.ok(!/#export-preview \{[\s\S]*?position: absolute/.test(print), 'the sheet stays in flow');
+
+  // A résumé can run longer than one page; a section that refuses to break
+  // jumps wholesale to page 2 and leaves page 1 almost empty.
+  assert.match(print, /\.paper-section \{ break-inside: auto; \}/);
+  assert.match(print, /\.paper-entry[^{]*\{ break-inside: avoid; \}/);
 });

@@ -552,6 +552,10 @@ function toYaml(model) {
     out.push(`${key(section.title.toLowerCase().replace(/\W+/g, '_'))}:`);
     if (section.kind === 'entries') {
       for (const e of section.entries) out.push(`  - ${yamlScalar([e.title, e.subtitle, e.when].filter(Boolean).join(', '))}`);
+    } else if (section.kind === 'groups') {
+      for (const g of section.groups) {
+        out.push(`  - ${yamlScalar(g.label ? `${g.label}: ${g.items.join(', ')}` : g.items.join(', '))}`);
+      }
     } else {
       for (const run of section.runs) for (const item of run.items) out.push(`  - ${yamlScalar(item)}`);
     }
